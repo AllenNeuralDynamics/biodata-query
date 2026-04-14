@@ -16,35 +16,22 @@ jobs:
         ref: ${{ env.DEFAULT_BRANCH }}
         fetch-depth: 0
         token: ${{ secrets.SERVICE_TOKEN }}
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
     - name: Set up Python 3.10
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
+      run: uv python install 3.10
     - name: Install dependencies
-      run: | 
-        python -m pip install -e . --group dev --no-cache-dir
+      run: uv sync --group dev
     - name: Get Python version and Update README.md
       run: |
         python_version=$(grep "requires-python" pyproject.toml | grep -o ">=[^\"]*")
         python_badge=$(grep '^\!\[Python\]' README.md | sed -n 's/.*\(python-[^)]*\).*/\1/p')
         new_python_badge="python-$python_version-blue?logo=python"
         sed -i "s/$python_badge/$new_python_badge/g" README.md
-    - name: Get interrogate values and Update README.md
-      run: |
-        interrogate_val=$(interrogate . | grep -o 'actual: [0-9]*\.[0-9]*' | awk '{print $2}')
-        interrogate_badge=$(grep '^\!\[Interrogate\]' README.md | sed -n 's/.*\(interrogate-[^)]*\).*/\1/p')
-        if (( $(echo "$interrogate_val >= 90.00" | bc -l) )); then
-            new_interrogate_badge="interrogate-$interrogate_val%25-brightgreen"
-        elif (( $(echo "$interrogate_val < 80.00" | bc -l) )); then
-            new_interrogate_badge="interrogate-$interrogate_val%25-red"
-        else
-            new_interrogate_badge="interrogate-$interrogate_val%25-yellow"
-        fi
-        sed -i "s/$interrogate_badge/$new_interrogate_badge/g" README.md
     - name: Get Coverage values and Update README.md
       run: |
-        coverage run -m unittest discover
-        coverage_val=$(coverage report | grep "^TOTAL" | grep -o '[0-9]\+%' | grep -o '[0-9]\+')
+        uv run pytest --cov=biodata_query --cov-report=term-missing
+        coverage_val=$(uv run coverage report | grep "^TOTAL" | grep -o '[0-9]\+%' | grep -o '[0-9]\+')
         coverage_badge=$(grep '^\!\[Coverage\]' README.md | sed -n 's/.*\(coverage-[^)]*\).*/\1/p')
         if (( $(echo "$coverage_val >= 90.00" | bc -l) )); then 
             new_coverage_badge="coverage-$coverage_val%25-brightgreen"
@@ -74,14 +61,14 @@ jobs:
       - uses: actions/checkout@v4
       - name: Pull latest changes
         run: git pull origin main
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
       - name: Set up Python 3.10
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.10'
-      - name: Install dependencies
+        run: uv python install 3.10
+      - name: Build package
         run: |
-          pip install --upgrade setuptools wheel twine build
-          python -m build
+          uv build
+          pip install twine
           twine check dist/*
       - name: Publish on PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
