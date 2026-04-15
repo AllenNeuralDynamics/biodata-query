@@ -30,6 +30,7 @@ dev = [
 ]
 panel = [
     "panel>=1.8.10,<2",
+    "panel-material-ui",
 ]
 llm = [
     "boto3>=1.35,<2",

@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 from typing import Literal
+
+logger = logging.getLogger(__name__)
 
 import pandas as pd
 from aind_data_access_api.document_db import MetadataDbClient
@@ -71,8 +74,10 @@ def is_cache_eligible(query: dict) -> bool:
     """Check if all top-level keys in the query map to asset_basics columns."""
     for field, value in query.items():
         if field not in FIELD_TO_COLUMN:
+            logger.debug("Cache ineligible: field %r not in FIELD_TO_COLUMN", field)
             return False
         if _has_unsupported_operators(value):
+            logger.debug("Cache ineligible: field %r uses unsupported operators", field)
             return False
     return True
 
@@ -224,19 +229,27 @@ def run_query(query: dict, names_only: bool = False, limit: int = 0) -> QueryRes
         Maximum number of results to return. 0 means no limit. Only applied
         on the DocDB path; the cache path applies it as a post-filter slice.
     """
+    logger.debug("run_query called: query=%r names_only=%s limit=%s", query, names_only, limit)
     start = time.time()
 
     if is_cache_eligible(query):
+        logger.debug("Routing to cache backend")
         df = asset_basics()
         filtered = _apply_filter_to_dataframe(df, query)
         if limit:
             filtered = filtered.iloc[:limit]
         names = filtered["name"].tolist()
+        cache_elapsed = time.time() - start
+        logger.debug("Cache filter complete: %.3fs → %d names", cache_elapsed, len(names))
         records = None
         if not names_only:
+            fetch_start = time.time()
+            logger.debug("Fetching %d full records from DocDB (batched)", len(names))
             records = _fetch_full_records_batched(names)
+            logger.debug("DocDB batch fetch complete: %.3fs", time.time() - fetch_start)
         backend = "cache"
     else:
+        logger.debug("Routing to docdb backend")
         client = MetadataDbClient(host=API_GATEWAY_HOST)
         if names_only:
             raw = client.retrieve_docdb_records(filter_query=query, projection={"name": 1}, limit=limit)
@@ -249,6 +262,10 @@ def run_query(query: dict, names_only: bool = False, limit: int = 0) -> QueryRes
         backend = "docdb"
 
     elapsed = time.time() - start
+    logger.info(
+        "Query complete: backend=%s elapsed=%.3fs results=%d names_only=%s",
+        backend, elapsed, len(names), names_only,
+    )
     return QueryResult(
         backend=backend,
         elapsed_seconds=elapsed,

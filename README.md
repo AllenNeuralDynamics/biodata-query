@@ -44,3 +44,39 @@ Alternatively, if using `uv`, run
 ```bash
 uv sync
 ```
+
+## Development
+
+### Running tests
+
+```bash
+uv run pytest
+```
+
+To include the Panel UI tests, install the panel dependency group first:
+
+```bash
+uv sync --group panel --group dev
+uv run pytest
+```
+
+### Launching the Panel app locally
+
+Install the `panel` dependency group, then serve the demo script:
+
+```bash
+uv sync --group panel
+uv run panel serve scripts/panel_demo.py --show --autoreload
+```
+
+`--show` opens a browser tab automatically; `--autoreload` restarts the server whenever source files change.
+
+The app places the `QueryBuilder` in the sidebar and `QueryResults` in the main area. Select filters and click **Run Query** to execute.
+
+### Running integration tests
+
+Integration tests make real network calls (zombie-squirrel + AIND DocDB) and are kept outside the pytest suite:
+
+```bash
+uv run python scripts/integration_query.py
+```
