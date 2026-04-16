@@ -49,13 +49,12 @@ jobs:
         add: '["README.md"]'
   tag:
     needs: update_badges
-    if: ${{github.event.repository.name == 'aind-library-template'}}
     uses: AllenNeuralDynamics/.github/.github/workflows/release-bump-version.yml@main
     secrets:
       repo-token: ${{ secrets.SERVICE_TOKEN }}
   publish:
     needs: tag
-    if: false
+    if: true
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
