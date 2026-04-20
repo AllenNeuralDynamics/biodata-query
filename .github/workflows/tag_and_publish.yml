@@ -54,7 +54,7 @@ jobs:
       repo-token: ${{ secrets.SERVICE_TOKEN }}
   publish:
     needs: tag
-    if: true
+    if: false
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
