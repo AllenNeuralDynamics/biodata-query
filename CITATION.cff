@@ -3,6 +3,6 @@ message: "If you use this software, please cite it as below."
 authors:
 - given-names: "Allen Institute for Neural Dynamics"
 title: "biodata-query"
-version: "v0.1.0"
+version: "v0.1.1"
 date-release: 2026-04-14
 url: "https://github.com/AllenNeuralDynamics/biodata-query"
