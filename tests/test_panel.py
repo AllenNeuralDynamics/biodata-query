@@ -104,7 +104,12 @@ def test_widget_project_name_updates_query(builder):
 
 def test_widget_modality_updates_query(builder):
     builder._w_modality.value = ["ecephys"]
-    assert builder.query.get("data_description.modalities") == {"$in": ["ecephys"]}
+    assert builder.query.get("data_description.modalities.abbreviation") == "ecephys"
+
+
+def test_widget_multiple_modalities_uses_all(builder):
+    builder._w_modality.value = ["ecephys", "behavior"]
+    assert builder.query.get("data_description.modalities.abbreviation") == {"$all": ["ecephys", "behavior"]}
 
 
 def test_widget_data_level_updates_query(builder):
@@ -179,9 +184,15 @@ def test_json_text_updates_project_widget(builder):
 
 
 def test_json_text_updates_modality_widget(builder):
-    new_q = {"data_description.modalities": {"$in": ["ecephys"]}}
+    new_q = {"data_description.modalities.abbreviation": "ecephys"}
     builder._w_query_dict.value = json.dumps(new_q)
     assert builder._w_modality.value == ["ecephys"]
+
+
+def test_json_text_updates_multiple_modality_widget(builder):
+    new_q = {"data_description.modalities.abbreviation": {"$all": ["ecephys", "behavior"]}}
+    builder._w_query_dict.value = json.dumps(new_q)
+    assert builder._w_modality.value == ["ecephys", "behavior"]
 
 
 def test_json_text_updates_data_level_widget(builder):

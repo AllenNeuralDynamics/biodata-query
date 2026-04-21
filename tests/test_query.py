@@ -15,6 +15,7 @@ from biodata_query.query import (
     _has_unsupported_operators,
     _modality_series_contains,
     _modality_series_contains_any,
+    _projection_is_cache_servable,
     _to_utc_series,
     _to_utc_timestamp,
     is_cache_eligible,
@@ -77,6 +78,7 @@ class TestFieldToColumn:
             "data_description.project_name",
             "data_description.modality",
             "data_description.modalities",
+            "data_description.modalities.abbreviation",
             "data_description.data_level",
             "subject.subject_id",
             "subject.subject_details.genotype",
@@ -751,3 +753,128 @@ class TestRunQuery:
         mock_cls.return_value.retrieve_docdb_records.assert_called_once_with(
             filter_query=query, limit=5
         )
+
+    # projection parameter — cache path
+
+    def test_cache_path_cache_servable_projection_skips_fetch(self, small_df):
+        projection = {
+            "name": 1,
+            "data_description.project_name": 1,
+        }
+        with (
+            patch("biodata_query.query.asset_basics", return_value=small_df),
+            patch("biodata_query.query._fetch_full_records_batched") as mock_fetch,
+        ):
+            result = run_query(
+                {"data_description.project_name": "ProjectX"},
+                names_only=False,
+                projection=projection,
+            )
+
+        mock_fetch.assert_not_called()
+        assert result.backend == "cache"
+        assert result.asset_names == ["asset-A"]
+        assert result.records is None
+        assert result.dataframe is not None
+        assert list(result.dataframe["name"]) == ["asset-A"]
+
+    def test_cache_path_non_cache_servable_projection_does_fetch(self, small_df):
+        projection = {"name": 1, "data_description.institution": 1}  # institution not in FIELD_TO_COLUMN
+        fake_records = [{"name": "asset-A"}]
+        with (
+            patch("biodata_query.query.asset_basics", return_value=small_df),
+            patch(
+                "biodata_query.query._fetch_full_records_batched", return_value=fake_records
+            ) as mock_fetch,
+        ):
+            result = run_query(
+                {"data_description.project_name": "ProjectX"},
+                names_only=False,
+                projection=projection,
+            )
+
+        mock_fetch.assert_called_once_with(["asset-A"])
+        assert result.records == fake_records
+        assert result.dataframe is None
+
+    def test_cache_path_none_projection_does_fetch(self, small_df):
+        """projection=None (default) is treated as non-cache-servable for safety."""
+        fake_records = [{"name": "asset-A"}]
+        with (
+            patch("biodata_query.query.asset_basics", return_value=small_df),
+            patch(
+                "biodata_query.query._fetch_full_records_batched", return_value=fake_records
+            ) as mock_fetch,
+        ):
+            result = run_query(
+                {"data_description.project_name": "ProjectX"},
+                names_only=False,
+                projection=None,
+            )
+
+        mock_fetch.assert_called_once()
+        assert result.dataframe is None
+
+    def test_cache_path_names_only_ignores_projection(self, small_df):
+        """names_only=True never fetches or returns a dataframe regardless of projection."""
+        projection = {"name": 1, "data_description.project_name": 1}
+        with (
+            patch("biodata_query.query.asset_basics", return_value=small_df),
+            patch("biodata_query.query._fetch_full_records_batched") as mock_fetch,
+        ):
+            result = run_query({}, names_only=True, projection=projection)
+
+        mock_fetch.assert_not_called()
+        assert result.records is None
+        assert result.dataframe is None
+
+    # projection parameter — docdb path
+
+    def test_docdb_path_projection_passed_to_api(self):
+        query = {"data_description.institution": "AIND"}
+        projection = {"name": 1, "data_description.institution": 1}
+        fake_raw = [{"name": "asset-X"}]
+
+        with patch("biodata_query.query.MetadataDbClient") as mock_cls:
+            mock_cls.return_value.retrieve_docdb_records.return_value = fake_raw
+            run_query(query, names_only=False, projection=projection)
+
+        mock_cls.return_value.retrieve_docdb_records.assert_called_once_with(
+            filter_query=query, projection=projection
+        )
+
+    def test_docdb_path_none_projection_not_passed_to_api(self):
+        query = {"data_description.institution": "AIND"}
+        fake_raw = [{"name": "asset-X"}]
+
+        with patch("biodata_query.query.MetadataDbClient") as mock_cls:
+            mock_cls.return_value.retrieve_docdb_records.return_value = fake_raw
+            run_query(query, names_only=False, projection=None)
+
+        mock_cls.return_value.retrieve_docdb_records.assert_called_once_with(
+            filter_query=query
+        )
+
+
+# ── _projection_is_cache_servable ─────────────────────────────────────────────
+
+
+class TestProjectionIsCacheServable:
+    def test_none_returns_false(self):
+        assert _projection_is_cache_servable(None) is False
+
+    def test_empty_dict_returns_true(self):
+        assert _projection_is_cache_servable({}) is True
+
+    def test_all_known_fields_returns_true(self):
+        projection = {field: 1 for field in FIELD_TO_COLUMN}
+        assert _projection_is_cache_servable(projection) is True
+
+    def test_single_known_field_returns_true(self):
+        assert _projection_is_cache_servable({"name": 1}) is True
+
+    def test_unknown_field_returns_false(self):
+        assert _projection_is_cache_servable({"data_description.institution": 1}) is False
+
+    def test_mixed_known_and_unknown_returns_false(self):
+        assert _projection_is_cache_servable({"name": 1, "data_description.institution": 1}) is False

@@ -21,6 +21,7 @@ FIELD_TO_COLUMN: dict[str, str] = {
     "data_description.project_name": "project_name",
     "data_description.modality": "modalities",
     "data_description.modalities": "modalities",
+    "data_description.modalities.abbreviation": "modalities",
     "data_description.data_level": "data_level",
     "subject.subject_id": "subject_id",
     "subject.subject_details.genotype": "genotype",
@@ -36,7 +37,7 @@ _UNSUPPORTED_OPS: frozenset[str] = frozenset(
 
 # MongoDB operators that ARE supported in the pandas cache path
 _SUPPORTED_OPS: frozenset[str] = frozenset(
-    {"$in", "$regex", "$options", "$gte", "$lte", "$gt", "$lt"}
+    {"$in", "$all", "$regex", "$options", "$gte", "$lte", "$gt", "$lt"}
 )
 
 # Columns whose values are stored as timezone-aware ISO-8601 strings
@@ -55,7 +56,8 @@ class QueryResult:
     backend: Literal["cache", "docdb"]
     elapsed_seconds: float
     asset_names: list[str]
-    records: list[dict] | None  # None if names_only=True
+    records: list[dict] | None  # None if names_only=True or projection is cache-servable
+    dataframe: pd.DataFrame | None = None  # set on cache path when projection is cache-servable
 
 
 def _has_unsupported_operators(value: object) -> bool:
@@ -95,6 +97,17 @@ def _to_utc_timestamp(operand: object) -> pd.Timestamp:
     return ts.tz_convert("UTC")
 
 
+def _projection_is_cache_servable(projection: dict | None) -> bool:
+    """Return True if every requested field is available in the local cache.
+
+    ``None`` means the caller did not specify a projection, so we conservatively
+    assume full DocDB records may be needed.
+    """
+    if projection is None:
+        return False
+    return all(field in FIELD_TO_COLUMN for field in projection)
+
+
 def _modality_series_contains(series: pd.Series, value: str) -> pd.Series:
     """Boolean mask: rows where *value* is an exact modality term."""
 
@@ -118,10 +131,22 @@ def _modality_series_contains_any(series: pd.Series, values: list) -> pd.Series:
     return series.apply(_check)
 
 
+def _modality_series_contains_all(series: pd.Series, values: list) -> pd.Series:
+    """Boolean mask: rows where all elements of *values* are exact modality terms."""
+    value_set = set(values)
+
+    def _check(cell: object) -> bool:
+        if pd.isna(cell):
+            return False
+        return value_set <= {m.strip() for m in str(cell).split(",")}
+
+    return series.apply(_check)
+
+
 def _apply_filter_to_dataframe(df: pd.DataFrame, query: dict) -> pd.DataFrame:
     """Translate a MongoDB-style filter dict into pandas DataFrame operations.
 
-    Supported operators: simple equality, $in, $regex (with $options: "i"),
+    Supported operators: simple equality, $in, $all, $regex (with $options: "i"),
     $gte, $lte, $gt, $lt. Multiple top-level keys are ANDed together.
 
     Notes
@@ -142,7 +167,9 @@ def _apply_filter_to_dataframe(df: pd.DataFrame, query: dict) -> pd.DataFrame:
 
         if col == _MODALITIES_COLUMN:
             if isinstance(value, dict):
-                if "$in" in value:
+                if "$all" in value:
+                    mask &= _modality_series_contains_all(series, value["$all"])
+                elif "$in" in value:
                     mask &= _modality_series_contains_any(series, value["$in"])
                 elif "$regex" in value:
                     case_insensitive = "i" in value.get("$options", "")
@@ -212,7 +239,7 @@ def _fetch_full_records_batched(names: list[str], batch_size: int = 50) -> list[
     return records
 
 
-def run_query(query: dict, names_only: bool = False, limit: int = 0) -> QueryResult:
+def run_query(query: dict, names_only: bool = False, limit: int = 0, projection: dict | None = None) -> QueryResult:
     """Execute a query, routing through the local cache or DocDB as appropriate.
 
     A query is routed to the cache when every top-level filter key maps to a
@@ -242,21 +269,35 @@ def run_query(query: dict, names_only: bool = False, limit: int = 0) -> QueryRes
         cache_elapsed = time.time() - start
         logger.debug("Cache filter complete: %.3fs → %d names", cache_elapsed, len(names))
         records = None
+        result_df = None
         if not names_only:
-            fetch_start = time.time()
-            logger.debug("Fetching %d full records from DocDB (batched)", len(names))
-            records = _fetch_full_records_batched(names)
-            logger.debug("DocDB batch fetch complete: %.3fs", time.time() - fetch_start)
+            if _projection_is_cache_servable(projection):
+                logger.debug("Projection is cache-servable; skipping DocDB batch fetch")
+                result_df = filtered.reset_index(drop=True)
+            else:
+                fetch_start = time.time()
+                logger.debug("Fetching %d full records from DocDB (batched)", len(names))
+                records = _fetch_full_records_batched(names)
+                logger.debug("DocDB batch fetch complete: %.3fs", time.time() - fetch_start)
         backend = "cache"
     else:
+        result_df = None
         logger.debug("Routing to docdb backend")
         client = MetadataDbClient(host=API_GATEWAY_HOST)
         if names_only:
-            raw = client.retrieve_docdb_records(filter_query=query, projection={"name": 1}, limit=limit)
+            kwargs: dict = {"filter_query": query, "projection": {"name": 1}}
+            if limit:
+                kwargs["limit"] = limit
+            raw = client.retrieve_docdb_records(**kwargs)
             names = [r["name"] for r in raw]
             records = None
         else:
-            raw = client.retrieve_docdb_records(filter_query=query, limit=limit)
+            kwargs = {"filter_query": query}
+            if limit:
+                kwargs["limit"] = limit
+            if projection is not None:
+                kwargs["projection"] = projection
+            raw = client.retrieve_docdb_records(**kwargs)
             names = [r["name"] for r in raw]
             records = raw
         backend = "docdb"
@@ -271,4 +312,5 @@ def run_query(query: dict, names_only: bool = False, limit: int = 0) -> QueryRes
         elapsed_seconds=elapsed,
         asset_names=names,
         records=records,
+        dataframe=result_df,
     )

@@ -13,6 +13,26 @@ import param
 
 from biodata_query.query import QueryResult, run_query
 
+# Fields needed for the results table — all are available in the local cache.
+_DISPLAY_PROJECTION: dict[str, int] = {
+    "name": 1,
+    "data_description.project_name": 1,
+    "data_description.data_level": 1,
+    "data_description.modalities": 1,
+    "subject.subject_id": 1,
+    "acquisition.acquisition_start_time": 1,
+}
+
+# Flat column names in asset_basics that correspond to _DISPLAY_PROJECTION.
+_DISPLAY_COLUMNS: list[str] = [
+    "name",
+    "project_name",
+    "data_level",
+    "modalities",
+    "subject_id",
+    "acquisition_start_time",
+]
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -108,7 +128,7 @@ class QueryResults(pn.custom.PyComponent):
         logger.debug("Executing query: %r (names_only=%s)", query, names_only)
         self._tabulator.loading = True
         try:
-            result = run_query(query, names_only=names_only)
+            result = run_query(query, names_only=names_only, projection=_DISPLAY_PROJECTION)
         except Exception as exc:
             self._status.object = f"**Error:** {exc}"
             self._tabulator.loading = False
@@ -122,7 +142,9 @@ class QueryResults(pn.custom.PyComponent):
             f"**Results:** {len(result.asset_names)}"
         )
 
-        if result.records:
+        if result.dataframe is not None:
+            df = result.dataframe[_DISPLAY_COLUMNS].copy()
+        elif result.records:
             df = _flatten_records(result.records)
         else:
             df = pd.DataFrame({"name": result.asset_names})
