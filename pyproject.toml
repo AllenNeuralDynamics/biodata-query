@@ -22,7 +22,7 @@ dependencies = [
     "aind-data-access-api[docdb]>=1.9.4,<2",
 ]
 
-[dependency-groups]
+[project.optional-dependencies]
 dev = [
     "ruff",
     "pytest",
