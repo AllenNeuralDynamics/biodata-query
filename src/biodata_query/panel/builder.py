@@ -524,6 +524,8 @@ class QueryBuilder(pn.custom.PyComponent):
         """
         self._w_chat_submit.disabled = True
         self._w_chat_input.disabled = True
+        self._w_query_dict.disabled = True
+        self._w_query_dict.loading = True
         self._w_chat_error.visible = False
         self._w_chat_error.object = ""
 
@@ -555,8 +557,16 @@ class QueryBuilder(pn.custom.PyComponent):
         threading.Thread(target=_do_call, daemon=True).start()
 
     def _apply_new_query(self, new_query: dict) -> None:
-        """Update the query textarea; the text-change watcher propagates to self.query."""
-        self._w_query_dict.value = json.dumps(new_query, indent=2, default=str)
+        """Show the AI-suggested query in the textarea without auto-submitting.
+
+        The textarea watcher is suppressed via ``_syncing`` so the user can
+        review the result and press Submit themselves.
+        """
+        self._syncing = True
+        try:
+            self._w_query_dict.value = json.dumps(new_query, indent=2, default=str)
+        finally:
+            self._syncing = False
 
     def _show_chat_error(self, msg: str) -> None:
         self._w_chat_error.object = f"**Error:** {msg}"
@@ -565,6 +575,8 @@ class QueryBuilder(pn.custom.PyComponent):
     def _restore_chat_widgets(self) -> None:
         self._w_chat_submit.disabled = False
         self._w_chat_input.disabled = False
+        self._w_query_dict.disabled = False
+        self._w_query_dict.loading = False
 
     # ------------------------------------------------------------------
     # Panel interface

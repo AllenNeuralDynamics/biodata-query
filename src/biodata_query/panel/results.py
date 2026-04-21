@@ -100,6 +100,7 @@ class QueryResults(pn.custom.PyComponent):
             page_size=50,
             show_index=False,
             sizing_mode="stretch_width",
+            header_filters=True,
         )
 
         self.param.watch(self._on_query_change, "query")
