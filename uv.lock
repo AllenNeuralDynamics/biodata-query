@@ -144,7 +144,6 @@ wheels = [
 
 [[package]]
 name = "biodata-query"
-version = "0.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "aind-data-access-api", extra = ["docdb"] },
@@ -152,7 +151,7 @@ dependencies = [
     { name = "zombie-squirrel" },
 ]
 
-[package.dev-dependencies]
+[package.optional-dependencies]
 dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
@@ -170,20 +169,15 @@ panel = [
 requires-dist = [
     { name = "aind-data-access-api", extras = ["docdb"], specifier = ">=1.9.4,<2" },
     { name = "aind-data-schema", specifier = ">=2.6.0,<3" },
-    { name = "zombie-squirrel", specifier = ">=0.16.4,<1" },
+    { name = "boto3", marker = "extra == 'llm'", specifier = ">=1.35,<2" },
+    { name = "panel", marker = "extra == 'panel'", specifier = ">=1.8.10,<2" },
+    { name = "panel-material-ui", marker = "extra == 'panel'" },
+    { name = "pytest", marker = "extra == 'dev'" },
+    { name = "pytest-cov", marker = "extra == 'dev'" },
+    { name = "ruff", marker = "extra == 'dev'" },
+    { name = "zombie-squirrel", specifier = ">=0.17.0,<1" },
 ]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "ruff" },
-]
-llm = [{ name = "boto3", specifier = ">=1.35,<2" }]
-panel = [
-    { name = "panel", specifier = ">=1.8.10,<2" },
-    { name = "panel-material-ui" },
-]
+provides-extras = ["dev", "panel", "llm"]
 
 [[package]]
 name = "bleach"
@@ -2165,7 +2159,7 @@ wheels = [
 
 [[package]]
 name = "zombie-squirrel"
-version = "0.16.4"
+version = "0.17.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aind-data-access-api", extra = ["docdb"] },
@@ -2175,7 +2169,7 @@ dependencies = [
     { name = "pandas", version = "3.0.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "pyarrow" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/58/e2/b00baaf5f0bb8ee1c3dbc99de6f3dba8ad1a31ce88bf86d8d6f7f0a148ff/zombie_squirrel-0.16.4.tar.gz", hash = "sha256:bfb7af0734f83a629b4cd0ccb42dfe6d6d0ce2368d303bc55ade50a5de7a3823", size = 23922, upload-time = "2026-04-03T15:44:43.927Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/20/42/14915e9c2a47365308ab999955fb7a6ae91c8ce0305ff79c38229bf77e7b/zombie_squirrel-0.17.0.tar.gz", hash = "sha256:f713377a5e260c4570c332198e513203eec02eefa87a0ae5d8ec6527e79a0cc8", size = 24400, upload-time = "2026-04-21T18:23:08.043Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/5b/f0/bff8d6e839591558b4000aca3acb75549f138203018d88d4da9a783532c4/zombie_squirrel-0.16.4-py3-none-any.whl", hash = "sha256:e1a0e79a7051eec5b6443fe6f0af3fe625c13fad6f8694917cbceef5c755b5c2", size = 23006, upload-time = "2026-04-03T15:44:42.971Z" },
+    { url = "https://files.pythonhosted.org/packages/36/84/d30a3dc2bdfae510a4ee9361e843160055771ce6411a6bef0692fe2d0311/zombie_squirrel-0.17.0-py3-none-any.whl", hash = "sha256:4c49ff4b5ce52547b11d53304cf177b82ac5f0e403bbdb70f7652293f3be4bce", size = 23428, upload-time = "2026-04-21T18:23:06.858Z" },
 ]

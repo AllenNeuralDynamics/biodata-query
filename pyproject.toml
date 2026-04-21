@@ -18,7 +18,7 @@ readme = "README.md"
 
 dependencies = [
     "aind-data-schema>=2.6.0,<3",
-    "zombie-squirrel>=0.16.4,<1",
+    "zombie-squirrel>=0.17.0,<1",
     "aind-data-access-api[docdb]>=1.9.4,<2",
 ]
 
