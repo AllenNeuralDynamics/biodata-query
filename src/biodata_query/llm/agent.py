@@ -6,6 +6,8 @@ import json
 import logging
 import re
 
+import os
+
 import boto3
 
 from biodata_query.llm.prompt import SYSTEM_PROMPT
@@ -34,7 +36,10 @@ def _extract_json(text: str) -> dict:
     raise json.JSONDecodeError("No JSON object found", text, 0)
 
 
-def build_query(current_query: dict, user_message: str) -> dict:
+def build_query(
+    current_query: dict,
+    user_message: str,
+) -> dict:
     """Send the current query + user message to Bedrock and return a
     response envelope.
 
@@ -62,7 +67,20 @@ def build_query(current_query: dict, user_message: str) -> dict:
     RuntimeError
         If a valid query cannot be obtained within MAX_RETRIES attempts.
     """
-    bedrock = boto3.client("bedrock-runtime", region_name="us-west-2")
+    role_arn = os.environ.get("BEDROCK_ROLE_ARN") or None
+    if role_arn:
+        sts = boto3.client("sts")
+        assumed = sts.assume_role(RoleArn=role_arn, RoleSessionName="biodata-query")
+        creds = assumed["Credentials"]
+        bedrock = boto3.client(
+            "bedrock-runtime",
+            region_name="us-west-2",
+            aws_access_key_id=creds["AccessKeyId"],
+            aws_secret_access_key=creds["SecretAccessKey"],
+            aws_session_token=creds["SessionToken"],
+        )
+    else:
+        bedrock = boto3.client("bedrock-runtime", region_name="us-west-2")
 
     user_content = (
         f"Current query: {json.dumps(current_query)}\n"

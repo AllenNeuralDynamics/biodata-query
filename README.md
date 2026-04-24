@@ -38,6 +38,17 @@ The endpoint handler (`biodata_query.llm.endpoint.handle_get_query`) follows the
 3. Attach an API Gateway HTTP GET route (`/get-query`) with Lambda proxy integration.
 4. Grant the Lambda execution role `bedrock:InvokeModel` on `us.anthropic.claude-sonnet-4-20250514-v1:0` in `us-west-2`.
 
+**Environment variables:**
+
+| Variable | Required | Description |
+|---|---|---|
+| `BEDROCK_ROLE_ARN` | no | IAM role ARN to assume via STS before calling Bedrock. If unset, the default AWS profile / execution role is used directly. |
+
+Example (Lambda console or `serverless.yml`):
+```
+BEDROCK_ROLE_ARN=arn:aws:iam::024848463001:role/bedrock-access-CO
+```
+
 Query string parameters accepted by the deployed endpoint:
 
 | Parameter | Required | Description |
@@ -83,7 +94,11 @@ uv run python scripts/integration_query.py
 
 ### Debugging the LLM /get-query endpoint locally
 
-The LLM endpoint requires AWS credentials that can reach Bedrock in `us-west-2`.  Set them in your environment (e.g. via `aws sso login` or by exporting `AWS_PROFILE`) before starting the server.
+The LLM endpoint requires AWS credentials that can reach Bedrock in `us-west-2`.  Set them in your environment (e.g. via `aws sso login` or by exporting `AWS_PROFILE`) before starting the server.  If you need to assume a specific IAM role, export `BEDROCK_ROLE_ARN` as well:
+
+```bash
+export BEDROCK_ROLE_ARN=arn:aws:iam::024848463001:role/bedrock-access-CO
+```
 
 **1. Install the `llm` dependency group:**
 
