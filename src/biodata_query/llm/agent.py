@@ -11,7 +11,7 @@ import os
 import boto3
 
 from biodata_query.llm.prompt import SYSTEM_PROMPT
-from biodata_query.query import run_query
+from biodata_query.query import retrieve_records
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +132,7 @@ def build_query(
         # --- Validate the query inside an ok envelope ---
         new_query = envelope.get("query", {})
         try:
-            run_query(new_query, names_only=True)
+            retrieve_records(new_query, names_only=True)
             logger.debug("build_query succeeded on attempt %d", attempt + 1)
             return envelope
         except Exception as exc:  # noqa: BLE001

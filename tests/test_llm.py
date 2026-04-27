@@ -51,7 +51,7 @@ class TestBuildQuery:
 
         with (
             patch("biodata_query.llm.agent.boto3.client", return_value=mock_bedrock),
-            patch("biodata_query.llm.agent.run_query") as mock_run,
+            patch("biodata_query.llm.agent.retrieve_records") as mock_run,
         ):
             mock_run.return_value = MagicMock(asset_names=[])
             result = build_query({}, "find all raw data")
@@ -69,7 +69,7 @@ class TestBuildQuery:
 
         with (
             patch("biodata_query.llm.agent.boto3.client", return_value=mock_bedrock),
-            patch("biodata_query.llm.agent.run_query") as mock_run,
+            patch("biodata_query.llm.agent.retrieve_records") as mock_run,
         ):
             mock_run.return_value = MagicMock(asset_names=[])
             result = build_query({}, "find test-asset")
@@ -89,7 +89,7 @@ class TestBuildQuery:
 
         with (
             patch("biodata_query.llm.agent.boto3.client", return_value=mock_bedrock),
-            patch("biodata_query.llm.agent.run_query") as mock_run,
+            patch("biodata_query.llm.agent.retrieve_records") as mock_run,
         ):
             mock_run.side_effect = [ValueError("invalid operator"), MagicMock(asset_names=[])]
             result = build_query({}, "find something")
@@ -118,7 +118,7 @@ class TestBuildQuery:
 
         with (
             patch("biodata_query.llm.agent.boto3.client", return_value=mock_bedrock),
-            patch("biodata_query.llm.agent.run_query") as mock_run,
+            patch("biodata_query.llm.agent.retrieve_records") as mock_run,
         ):
             mock_run.return_value = MagicMock(asset_names=[])
             build_query(current, "add name filter")
@@ -135,7 +135,7 @@ class TestBuildQuery:
 
         with (
             patch("biodata_query.llm.agent.boto3.client", return_value=mock_bedrock),
-            patch("biodata_query.llm.agent.run_query") as mock_run,
+            patch("biodata_query.llm.agent.retrieve_records") as mock_run,
         ):
             mock_run.return_value = MagicMock(asset_names=[])
             result = build_query({}, "find subject 12345")

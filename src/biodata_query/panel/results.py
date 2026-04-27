@@ -11,7 +11,7 @@ import pandas as pd
 import panel as pn
 import param
 
-from biodata_query.query import QueryResult, run_query
+from biodata_query.query import QueryResult, retrieve_records
 
 # Fields needed for the results table — all are available in the local cache.
 _DISPLAY_PROJECTION: dict[str, int] = {
@@ -129,7 +129,7 @@ class QueryResults(pn.custom.PyComponent):
         logger.debug("Executing query: %r (names_only=%s)", query, names_only)
         self._tabulator.loading = True
         try:
-            result = run_query(query, names_only=names_only, projection=_DISPLAY_PROJECTION)
+            result = retrieve_records(query, projection=_DISPLAY_PROJECTION, names_only=names_only)
         except Exception as exc:
             self._status.object = f"**Error:** {exc}"
             self._tabulator.loading = False

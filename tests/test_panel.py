@@ -260,7 +260,7 @@ def test_query_results_initial_status(results):
 
 
 # ---------------------------------------------------------------------------
-# QueryResults — run with mocked run_query
+# QueryResults — run with mocked retrieve_records
 # ---------------------------------------------------------------------------
 
 _MOCK_RESULT_NAMES_ONLY = MagicMock(
@@ -286,7 +286,7 @@ _MOCK_RESULT_FULL = MagicMock(
 
 
 def test_query_results_run_names_only(results):
-    with patch("biodata_query.panel.results.run_query", return_value=_MOCK_RESULT_NAMES_ONLY):
+    with patch("biodata_query.panel.results.retrieve_records", return_value=_MOCK_RESULT_NAMES_ONLY):
         results.run({"name": "asset.*"}, names_only=True)
 
     assert "cache" in results._status.object
@@ -296,7 +296,7 @@ def test_query_results_run_names_only(results):
 
 
 def test_query_results_run_full_records(results):
-    with patch("biodata_query.panel.results.run_query", return_value=_MOCK_RESULT_FULL):
+    with patch("biodata_query.panel.results.retrieve_records", return_value=_MOCK_RESULT_FULL):
         results.run({"name": "asset-A"})
 
     assert "docdb" in results._status.object
@@ -307,7 +307,7 @@ def test_query_results_run_full_records(results):
 
 
 def test_query_results_error_handling(results):
-    with patch("biodata_query.panel.results.run_query", side_effect=RuntimeError("connection failed")):
+    with patch("biodata_query.panel.results.retrieve_records", side_effect=RuntimeError("connection failed")):
         results.run({"name": "asset.*"})
 
     assert "Error" in results._status.object
@@ -315,7 +315,7 @@ def test_query_results_error_handling(results):
 
 
 def test_query_results_query_param_triggers_run(results):
-    with patch("biodata_query.panel.results.run_query", return_value=_MOCK_RESULT_NAMES_ONLY) as mock_rq:
+    with patch("biodata_query.panel.results.retrieve_records", return_value=_MOCK_RESULT_NAMES_ONLY) as mock_rq:
         results.query = {"data_description.project_name": "ProjectX"}
 
     mock_rq.assert_called_once_with(
@@ -324,7 +324,7 @@ def test_query_results_query_param_triggers_run(results):
 
 
 def test_query_results_empty_query_does_not_run(results):
-    with patch("biodata_query.panel.results.run_query") as mock_rq:
+    with patch("biodata_query.panel.results.retrieve_records") as mock_rq:
         results.query = {}
 
     mock_rq.assert_not_called()

@@ -19,7 +19,7 @@ from biodata_query.query import (
     _to_utc_series,
     _to_utc_timestamp,
     is_cache_eligible,
-    run_query,
+    retrieve_records,
 )
 
 
@@ -591,7 +591,7 @@ class TestFetchFullRecordsBatched:
         assert [r["name"] for r in result] == ["x", "y", "z"]
 
 
-# ── run_query ─────────────────────────────────────────────────────────────────
+# ── retrieve_records ─────────────────────────────────────────────────────────────────
 
 
 @pytest.fixture
@@ -616,7 +616,7 @@ class TestRunQuery:
 
     def test_cache_path_names_only(self, small_df):
         with patch("biodata_query.query.asset_basics", return_value=small_df):
-            result = run_query({"data_description.project_name": "ProjectX"}, names_only=True)
+            result = retrieve_records({"data_description.project_name": "ProjectX"}, names_only=True)
 
         assert result.backend == "cache"
         assert result.asset_names == ["asset-A"]
@@ -630,7 +630,7 @@ class TestRunQuery:
                 "biodata_query.query._fetch_full_records_batched", return_value=fake_records
             ) as mock_fetch,
         ):
-            result = run_query({"data_description.project_name": "ProjectX"}, names_only=False)
+            result = retrieve_records({"data_description.project_name": "ProjectX"}, names_only=False)
 
         assert result.backend == "cache"
         assert result.asset_names == ["asset-A"]
@@ -639,7 +639,7 @@ class TestRunQuery:
 
     def test_cache_path_empty_query_returns_all(self, small_df):
         with patch("biodata_query.query.asset_basics", return_value=small_df):
-            result = run_query({}, names_only=True)
+            result = retrieve_records({}, names_only=True)
 
         assert result.backend == "cache"
         assert set(result.asset_names) == {"asset-A", "asset-B"}
@@ -651,7 +651,7 @@ class TestRunQuery:
                 "biodata_query.query._fetch_full_records_batched", return_value=[]
             ) as mock_fetch,
         ):
-            result = run_query({"data_description.project_name": "NoProject"}, names_only=False)
+            result = retrieve_records({"data_description.project_name": "NoProject"}, names_only=False)
 
         assert result.asset_names == []
         assert result.records == []
@@ -665,7 +665,7 @@ class TestRunQuery:
 
         with patch("biodata_query.query.MetadataDbClient") as mock_cls:
             mock_cls.return_value.retrieve_docdb_records.return_value = fake_raw
-            result = run_query(query, names_only=True)
+            result = retrieve_records(query, names_only=True)
 
         assert result.backend == "docdb"
         assert result.asset_names == ["asset-X", "asset-Y"]
@@ -680,7 +680,7 @@ class TestRunQuery:
 
         with patch("biodata_query.query.MetadataDbClient") as mock_cls:
             mock_cls.return_value.retrieve_docdb_records.return_value = fake_raw
-            result = run_query(query, names_only=False)
+            result = retrieve_records(query, names_only=False)
 
         assert result.backend == "docdb"
         assert result.asset_names == ["asset-X", "asset-Y"]
@@ -692,7 +692,7 @@ class TestRunQuery:
 
         with patch("biodata_query.query.MetadataDbClient") as mock_cls:
             mock_cls.return_value.retrieve_docdb_records.return_value = []
-            result = run_query(query, names_only=True)
+            result = retrieve_records(query, names_only=True)
 
         assert result.backend == "docdb"
 
@@ -700,13 +700,13 @@ class TestRunQuery:
 
     def test_result_is_query_result_instance(self, small_df):
         with patch("biodata_query.query.asset_basics", return_value=small_df):
-            result = run_query({}, names_only=True)
+            result = retrieve_records({}, names_only=True)
 
         assert isinstance(result, QueryResult)
 
     def test_elapsed_seconds_is_non_negative(self, small_df):
         with patch("biodata_query.query.asset_basics", return_value=small_df):
-            result = run_query({}, names_only=True)
+            result = retrieve_records({}, names_only=True)
 
         assert result.elapsed_seconds >= 0
 
@@ -715,7 +715,7 @@ class TestRunQuery:
             patch("biodata_query.query.asset_basics", return_value=small_df),
             patch("biodata_query.query._fetch_full_records_batched", return_value=[{"name": "asset-A"}]),
         ):
-            result = run_query({"name": "asset-A"}, names_only=False)
+            result = retrieve_records({"name": "asset-A"}, names_only=False)
 
         assert result.records is not None
 
@@ -723,14 +723,14 @@ class TestRunQuery:
 
     def test_limit_applied_on_cache_path(self, small_df):
         with patch("biodata_query.query.asset_basics", return_value=small_df):
-            result = run_query({}, names_only=True, limit=1)
+            result = retrieve_records({}, names_only=True, limit=1)
 
         assert result.backend == "cache"
         assert len(result.asset_names) == 1
 
     def test_limit_zero_means_no_limit_on_cache_path(self, small_df):
         with patch("biodata_query.query.asset_basics", return_value=small_df):
-            result = run_query({}, names_only=True, limit=0)
+            result = retrieve_records({}, names_only=True, limit=0)
 
         assert len(result.asset_names) == 2  # both rows in small_df
 
@@ -738,7 +738,7 @@ class TestRunQuery:
         query = {"data_description.institution": "AIND"}
         with patch("biodata_query.query.MetadataDbClient") as mock_cls:
             mock_cls.return_value.retrieve_docdb_records.return_value = [{"name": "x"}]
-            run_query(query, names_only=True, limit=10)
+            retrieve_records(query, names_only=True, limit=10)
 
         mock_cls.return_value.retrieve_docdb_records.assert_called_once_with(
             filter_query=query, projection={"name": 1}, limit=10
@@ -748,7 +748,7 @@ class TestRunQuery:
         query = {"data_description.institution": "AIND"}
         with patch("biodata_query.query.MetadataDbClient") as mock_cls:
             mock_cls.return_value.retrieve_docdb_records.return_value = [{"name": "x"}]
-            run_query(query, names_only=False, limit=5)
+            retrieve_records(query, names_only=False, limit=5)
 
         mock_cls.return_value.retrieve_docdb_records.assert_called_once_with(
             filter_query=query, limit=5
@@ -765,7 +765,7 @@ class TestRunQuery:
             patch("biodata_query.query.asset_basics", return_value=small_df),
             patch("biodata_query.query._fetch_full_records_batched") as mock_fetch,
         ):
-            result = run_query(
+            result = retrieve_records(
                 {"data_description.project_name": "ProjectX"},
                 names_only=False,
                 projection=projection,
@@ -787,7 +787,7 @@ class TestRunQuery:
                 "biodata_query.query._fetch_full_records_batched", return_value=fake_records
             ) as mock_fetch,
         ):
-            result = run_query(
+            result = retrieve_records(
                 {"data_description.project_name": "ProjectX"},
                 names_only=False,
                 projection=projection,
@@ -806,7 +806,7 @@ class TestRunQuery:
                 "biodata_query.query._fetch_full_records_batched", return_value=fake_records
             ) as mock_fetch,
         ):
-            result = run_query(
+            result = retrieve_records(
                 {"data_description.project_name": "ProjectX"},
                 names_only=False,
                 projection=None,
@@ -822,7 +822,7 @@ class TestRunQuery:
             patch("biodata_query.query.asset_basics", return_value=small_df),
             patch("biodata_query.query._fetch_full_records_batched") as mock_fetch,
         ):
-            result = run_query({}, names_only=True, projection=projection)
+            result = retrieve_records({}, names_only=True, projection=projection)
 
         mock_fetch.assert_not_called()
         assert result.records is None
@@ -837,7 +837,7 @@ class TestRunQuery:
 
         with patch("biodata_query.query.MetadataDbClient") as mock_cls:
             mock_cls.return_value.retrieve_docdb_records.return_value = fake_raw
-            run_query(query, names_only=False, projection=projection)
+            retrieve_records(query, names_only=False, projection=projection)
 
         mock_cls.return_value.retrieve_docdb_records.assert_called_once_with(
             filter_query=query, projection=projection
@@ -849,7 +849,7 @@ class TestRunQuery:
 
         with patch("biodata_query.query.MetadataDbClient") as mock_cls:
             mock_cls.return_value.retrieve_docdb_records.return_value = fake_raw
-            run_query(query, names_only=False, projection=None)
+            retrieve_records(query, names_only=False, projection=None)
 
         mock_cls.return_value.retrieve_docdb_records.assert_called_once_with(
             filter_query=query

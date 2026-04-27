@@ -239,7 +239,7 @@ def _fetch_full_records_batched(names: list[str], batch_size: int = 50) -> list[
     return records
 
 
-def run_query(query: dict, names_only: bool = False, limit: int = 0, projection: dict | None = None) -> QueryResult:
+def retrieve_records(filter_query: dict, projection: dict | None = None, limit: int = 0, names_only: bool = False) -> QueryResult:
     """Execute a query, routing through the local cache or DocDB as appropriate.
 
     A query is routed to the cache when every top-level filter key maps to a
@@ -248,21 +248,23 @@ def run_query(query: dict, names_only: bool = False, limit: int = 0, projection:
 
     Parameters
     ----------
-    query:
+    filter_query:
         MongoDB-style filter dictionary.
-    names_only:
-        When True, skip fetching full records and return only asset names.
+    projection:
+        Optional MongoDB projection dict to limit returned fields.
     limit:
         Maximum number of results to return. 0 means no limit. Only applied
         on the DocDB path; the cache path applies it as a post-filter slice.
+    names_only:
+        When True, skip fetching full records and return only asset names.
     """
-    logger.debug("run_query called: query=%r names_only=%s limit=%s", query, names_only, limit)
+    logger.debug("retrieve_records called: filter_query=%r names_only=%s limit=%s", filter_query, names_only, limit)
     start = time.time()
 
-    if is_cache_eligible(query):
+    if is_cache_eligible(filter_query):
         logger.debug("Routing to cache backend")
         df = asset_basics()
-        filtered = _apply_filter_to_dataframe(df, query)
+        filtered = _apply_filter_to_dataframe(df, filter_query)
         if limit:
             filtered = filtered.iloc[:limit]
         names = filtered["name"].tolist()
@@ -285,14 +287,14 @@ def run_query(query: dict, names_only: bool = False, limit: int = 0, projection:
         logger.debug("Routing to docdb backend")
         client = MetadataDbClient(host=API_GATEWAY_HOST)
         if names_only:
-            kwargs: dict = {"filter_query": query, "projection": {"name": 1}}
+            kwargs: dict = {"filter_query": filter_query, "projection": {"name": 1}}
             if limit:
                 kwargs["limit"] = limit
             raw = client.retrieve_docdb_records(**kwargs)
             names = [r["name"] for r in raw]
             records = None
         else:
-            kwargs = {"filter_query": query}
+            kwargs = {"filter_query": filter_query}
             if limit:
                 kwargs["limit"] = limit
             if projection is not None:
