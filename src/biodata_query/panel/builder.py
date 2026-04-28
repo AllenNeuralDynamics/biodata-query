@@ -526,6 +526,7 @@ class QueryBuilder(pn.custom.PyComponent):
         self._w_chat_input.disabled = True
         self._w_query_dict.disabled = True
         self._w_query_dict.loading = True
+        self._w_run.disabled = True
         self._w_chat_error.visible = False
         self._w_chat_error.object = ""
 
@@ -567,6 +568,8 @@ class QueryBuilder(pn.custom.PyComponent):
             self._w_query_dict.value = json.dumps(new_query, indent=2, default=str)
         finally:
             self._syncing = False
+        # Enter paste mode so Submit reads from the textarea, not the widgets.
+        self._set_paste_mode(True)
 
     def _show_chat_error(self, msg: str) -> None:
         self._w_chat_error.object = f"**Error:** {msg}"
@@ -577,6 +580,7 @@ class QueryBuilder(pn.custom.PyComponent):
         self._w_chat_input.disabled = False
         self._w_query_dict.disabled = False
         self._w_query_dict.loading = False
+        self._w_run.disabled = False
 
     # ------------------------------------------------------------------
     # Panel interface
