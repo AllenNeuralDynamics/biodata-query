@@ -16,7 +16,7 @@ import param
 import requests as _requests
 from zombie_squirrel import asset_basics, unique_project_names, unique_subject_ids
 
-from biodata_query.query import FIELD_TO_COLUMN, _apply_filter_to_dataframe
+from biodata_query.query import FIELD_TO_COLUMN, _apply_filter_to_dataframe, retrieve_aggregation
 
 # ---------------------------------------------------------------------------
 # Modality abbreviations from aind-data-schema-models
@@ -59,6 +59,7 @@ class QueryBuilder(pn.custom.PyComponent):
     """
 
     query = param.Dict(default={}, doc="Current MongoDB filter query dictionary")
+    pipeline = param.List(default=[], doc="Aggregation pipeline (list of stage dicts); set when pasted JSON is a list")
 
     def __init__(self, **params: Any) -> None:
         super().__init__(**params)
@@ -435,9 +436,13 @@ class QueryBuilder(pn.custom.PyComponent):
     def _on_run_click(self, event: Any) -> None:  # noqa: ARG002
         if self._paste_mode:
             try:
-                self.query = json.loads(self._w_query_dict.value)
+                parsed = json.loads(self._w_query_dict.value)
             except (json.JSONDecodeError, ValueError):
-                pass
+                return
+            if isinstance(parsed, list):
+                self.pipeline = parsed
+            else:
+                self.query = parsed
         else:
             self.query = self._build_query_from_widgets()
 
@@ -445,13 +450,20 @@ class QueryBuilder(pn.custom.PyComponent):
         if self._syncing:
             return
         try:
-            q = json.loads(event.new)
+            parsed = json.loads(event.new)
         except (json.JSONDecodeError, ValueError):
             return  # Ignore invalid JSON while the user is mid-edit
 
         # The user directly edited the textarea — enter paste mode.
         self._set_paste_mode(True)
 
+        # Aggregation pipeline: a JSON list — skip widget sync entirely.
+        if isinstance(parsed, list):
+            self.pipeline = parsed
+            self._sync_url()
+            return
+
+        q = parsed
         self._syncing = True
         try:
             self.query = q

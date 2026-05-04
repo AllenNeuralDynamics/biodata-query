@@ -19,6 +19,7 @@ from biodata_query.query import (
     _to_utc_series,
     _to_utc_timestamp,
     is_cache_eligible,
+    retrieve_aggregation,
     retrieve_records,
 )
 
@@ -878,3 +879,146 @@ class TestProjectionIsCacheServable:
 
     def test_mixed_known_and_unknown_returns_false(self):
         assert _projection_is_cache_servable({"name": 1, "data_description.institution": 1}) is False
+
+
+# ── retrieve_records force_backend ───────────────────────────────────────────
+
+
+class TestRetrieveRecordsForceBackend:
+    """Tests for the force_backend parameter of retrieve_records."""
+
+    def test_force_cache_uses_cache_for_eligible_query(self, small_df):
+        with patch("biodata_query.query.asset_basics", return_value=small_df):
+            result = retrieve_records(
+                {"data_description.project_name": "ProjectX"},
+                names_only=True,
+                force_backend="cache",
+            )
+        assert result.backend == "cache"
+        assert result.asset_names == ["asset-A"]
+
+    def test_force_docdb_skips_cache_for_eligible_query(self, small_df):
+        """An otherwise cache-eligible query must go to DocDB when forced."""
+        query = {"data_description.project_name": "ProjectX"}
+        fake_raw = [{"name": "asset-A"}]
+        with (
+            patch("biodata_query.query.asset_basics", return_value=small_df) as mock_cache,
+            patch("biodata_query.query.MetadataDbClient") as mock_cls,
+        ):
+            mock_cls.return_value.retrieve_docdb_records.return_value = fake_raw
+            result = retrieve_records(query, names_only=True, force_backend="docdb")
+
+        mock_cache.assert_not_called()
+        assert result.backend == "docdb"
+        assert result.asset_names == ["asset-A"]
+
+    def test_force_cache_raises_for_ineligible_query(self):
+        """force_backend='cache' must raise ValueError when query is not cache-eligible."""
+        query = {"data_description.institution": "AIND"}  # not in FIELD_TO_COLUMN
+        with pytest.raises(ValueError, match="not cache-eligible"):
+            retrieve_records(query, names_only=True, force_backend="cache")
+
+    def test_force_docdb_works_for_ineligible_query(self):
+        """force_backend='docdb' must not raise even for ineligible queries."""
+        query = {"data_description.institution": "AIND"}
+        with patch("biodata_query.query.MetadataDbClient") as mock_cls:
+            mock_cls.return_value.retrieve_docdb_records.return_value = []
+            result = retrieve_records(query, names_only=True, force_backend="docdb")
+        assert result.backend == "docdb"
+
+    def test_force_none_auto_routes_eligible_to_cache(self, small_df):
+        with patch("biodata_query.query.asset_basics", return_value=small_df):
+            result = retrieve_records({}, names_only=True, force_backend=None)
+        assert result.backend == "cache"
+
+    def test_force_none_auto_routes_ineligible_to_docdb(self):
+        query = {"data_description.institution": "AIND"}
+        with patch("biodata_query.query.MetadataDbClient") as mock_cls:
+            mock_cls.return_value.retrieve_docdb_records.return_value = []
+            result = retrieve_records(query, names_only=True, force_backend=None)
+        assert result.backend == "docdb"
+
+    def test_force_cache_raises_for_unsupported_operator(self):
+        """force_backend='cache' must raise ValueError for queries with unsupported operators."""
+        query = {"name": {"$elemMatch": {"x": 1}}}
+        with pytest.raises(ValueError, match="not cache-eligible"):
+            retrieve_records(query, names_only=True, force_backend="cache")
+
+
+# ── retrieve_aggregation ─────────────────────────────────────────────────────
+
+
+class TestRetrieveAggregation:
+    def test_returns_query_result(self):
+        pipeline = [{"$match": {"name": "x"}}, {"$limit": 1}]
+        fake_records = [{"name": "x", "other": 1}]
+        with patch("biodata_query.query.MetadataDbClient") as mock_cls:
+            mock_cls.return_value.aggregate_docdb_records.return_value = fake_records
+            result = retrieve_aggregation(pipeline)
+        assert isinstance(result, QueryResult)
+
+    def test_backend_is_docdb(self):
+        pipeline = [{"$match": {}}]
+        with patch("biodata_query.query.MetadataDbClient") as mock_cls:
+            mock_cls.return_value.aggregate_docdb_records.return_value = []
+            result = retrieve_aggregation(pipeline)
+        assert result.backend == "docdb"
+
+    def test_pipeline_passed_to_client(self):
+        pipeline = [{"$match": {"name": "x"}}, {"$limit": 5}]
+        with patch("biodata_query.query.MetadataDbClient") as mock_cls:
+            mock_cls.return_value.aggregate_docdb_records.return_value = []
+            retrieve_aggregation(pipeline)
+        mock_cls.return_value.aggregate_docdb_records.assert_called_once_with(pipeline=pipeline)
+
+    def test_records_returned(self):
+        pipeline = [{"$match": {}}]
+        fake_records = [{"name": "a"}, {"name": "b"}]
+        with patch("biodata_query.query.MetadataDbClient") as mock_cls:
+            mock_cls.return_value.aggregate_docdb_records.return_value = fake_records
+            result = retrieve_aggregation(pipeline)
+        assert result.records == fake_records
+
+    def test_asset_names_extracted_from_records(self):
+        pipeline = [{"$match": {}}]
+        fake_records = [{"name": "asset-A"}, {"name": "asset-B"}, {"no_name_key": True}]
+        with patch("biodata_query.query.MetadataDbClient") as mock_cls:
+            mock_cls.return_value.aggregate_docdb_records.return_value = fake_records
+            result = retrieve_aggregation(pipeline)
+        assert result.asset_names == ["asset-A", "asset-B"]
+
+    def test_dataframe_is_none(self):
+        pipeline = [{"$match": {}}]
+        with patch("biodata_query.query.MetadataDbClient") as mock_cls:
+            mock_cls.return_value.aggregate_docdb_records.return_value = []
+            result = retrieve_aggregation(pipeline)
+        assert result.dataframe is None
+
+    def test_elapsed_seconds_non_negative(self):
+        pipeline = [{"$match": {}}]
+        with patch("biodata_query.query.MetadataDbClient") as mock_cls:
+            mock_cls.return_value.aggregate_docdb_records.return_value = []
+            result = retrieve_aggregation(pipeline)
+        assert result.elapsed_seconds >= 0
+
+    def test_raises_for_empty_pipeline(self):
+        with pytest.raises(ValueError, match="non-empty list"):
+            retrieve_aggregation([])
+
+    def test_raises_for_non_list_pipeline(self):
+        with pytest.raises(ValueError, match="non-empty list"):
+            retrieve_aggregation({"$match": {}})  # type: ignore[arg-type]
+
+    def test_raises_for_stage_that_is_not_dict(self):
+        with pytest.raises(ValueError, match="stage 0 is not a dict"):
+            retrieve_aggregation(["not a dict"])  # type: ignore[list-item]
+
+    def test_never_calls_asset_basics(self):
+        pipeline = [{"$match": {}}]
+        with (
+            patch("biodata_query.query.MetadataDbClient") as mock_cls,
+            patch("biodata_query.query.asset_basics") as mock_cache,
+        ):
+            mock_cls.return_value.aggregate_docdb_records.return_value = []
+            retrieve_aggregation(pipeline)
+        mock_cache.assert_not_called()

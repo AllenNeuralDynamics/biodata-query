@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -239,7 +239,13 @@ def _fetch_full_records_batched(names: list[str], batch_size: int = 50) -> list[
     return records
 
 
-def retrieve_records(filter_query: dict, projection: dict | None = None, limit: int = 0, names_only: bool = False) -> QueryResult:
+def retrieve_records(
+    filter_query: dict,
+    projection: dict | None = None,
+    limit: int = 0,
+    names_only: bool = False,
+    force_backend: Optional[Literal["cache", "docdb"]] = None,
+) -> QueryResult:
     """Execute a query, routing through the local cache or DocDB as appropriate.
 
     A query is routed to the cache when every top-level filter key maps to a
@@ -257,11 +263,29 @@ def retrieve_records(filter_query: dict, projection: dict | None = None, limit: 
         on the DocDB path; the cache path applies it as a post-filter slice.
     names_only:
         When True, skip fetching full records and return only asset names.
+    force_backend:
+        ``"cache"`` to force the local-cache path (raises ``ValueError`` if
+        the query is not cache-eligible), ``"docdb"`` to skip the cache and
+        always hit DocumentDB, or ``None`` (default) to auto-route.
     """
-    logger.debug("retrieve_records called: filter_query=%r names_only=%s limit=%s", filter_query, names_only, limit)
+    logger.debug(
+        "retrieve_records called: filter_query=%r names_only=%s limit=%s force_backend=%s",
+        filter_query, names_only, limit, force_backend,
+    )
     start = time.time()
 
-    if is_cache_eligible(filter_query):
+    if force_backend == "cache" and not is_cache_eligible(filter_query):
+        raise ValueError(
+            "force_backend='cache' requested but the query is not cache-eligible. "
+            "Use force_backend=None or force_backend='docdb'."
+        )
+
+    use_cache = (
+        force_backend == "cache"
+        or (force_backend is None and is_cache_eligible(filter_query))
+    )
+
+    if use_cache:
         logger.debug("Routing to cache backend")
         df = asset_basics()
         filtered = _apply_filter_to_dataframe(df, filter_query)
@@ -315,4 +339,43 @@ def retrieve_records(filter_query: dict, projection: dict | None = None, limit: 
         asset_names=names,
         records=records,
         dataframe=result_df,
+    )
+
+
+def retrieve_aggregation(pipeline: list) -> QueryResult:
+    """Execute an aggregation pipeline directly against DocumentDB.
+
+    The pipeline is never routed through the local cache.
+
+    Parameters
+    ----------
+    pipeline:
+        A MongoDB aggregation pipeline (a list of stage dicts).
+
+    Raises
+    ------
+    ValueError
+        If *pipeline* is not a non-empty list of dicts.
+    """
+    if not isinstance(pipeline, list) or not pipeline:
+        raise ValueError("pipeline must be a non-empty list of stage dicts")
+    for i, stage in enumerate(pipeline):
+        if not isinstance(stage, dict):
+            raise ValueError(f"pipeline stage {i} is not a dict: {stage!r}")
+
+    logger.debug("retrieve_aggregation called: %d stages", len(pipeline))
+    start = time.time()
+
+    client = MetadataDbClient(host=API_GATEWAY_HOST)
+    records = client.aggregate_docdb_records(pipeline=pipeline)
+    names = [r["name"] for r in records if "name" in r]
+
+    elapsed = time.time() - start
+    logger.info("Aggregation complete: elapsed=%.3fs results=%d", elapsed, len(records))
+    return QueryResult(
+        backend="docdb",
+        elapsed_seconds=elapsed,
+        asset_names=names,
+        records=records,
+        dataframe=None,
     )

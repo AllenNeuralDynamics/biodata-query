@@ -36,7 +36,8 @@ pn.extension(
 builder = QueryBuilder()
 results = QueryResults()
 
-# Wire builder → results: when the query param changes, update results
+# Wire builder → results: when the query/pipeline param changes, update results
 builder.param.watch(lambda e: results.param.update(query=e.new), "query")
+builder.param.watch(lambda e: results.param.update(pipeline=e.new), "pipeline")
 
 pn.Column(builder, pn.layout.Divider(), results, sizing_mode="stretch_width").servable()

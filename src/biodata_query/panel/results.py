@@ -11,7 +11,7 @@ import pandas as pd
 import panel as pn
 import param
 
-from biodata_query.query import QueryResult, retrieve_records
+from biodata_query.query import QueryResult, retrieve_records, retrieve_aggregation
 
 # Fields needed for the results table — all are available in the local cache.
 _DISPLAY_PROJECTION: dict[str, int] = {
@@ -82,11 +82,18 @@ class QueryResults(pn.custom.PyComponent):
         builder = QueryBuilder()
         results = QueryResults()
         builder.param.watch(lambda e: results.param.update(query=e.new), "query")
+        builder.param.watch(lambda e: results.param.update(pipeline=e.new), "pipeline")
 
     Or trigger manually via :meth:`run`.
     """
 
     query = param.Dict(default={}, doc="MongoDB filter query to execute")
+    pipeline = param.List(default=[], doc="MongoDB aggregation pipeline to execute")
+    force_backend = param.Selector(
+        default=None,
+        objects=[None, "cache", "docdb"],
+        doc="Force routing to a specific backend. None = auto-route. Ignored for aggregation pipelines.",
+    )
 
     def __init__(self, **params: Any) -> None:
         super().__init__(**params)
@@ -104,6 +111,7 @@ class QueryResults(pn.custom.PyComponent):
         )
 
         self.param.watch(self._on_query_change, "query")
+        self.param.watch(self._on_pipeline_change, "pipeline")
 
     # ------------------------------------------------------------------
     # Watcher
@@ -112,6 +120,10 @@ class QueryResults(pn.custom.PyComponent):
     def _on_query_change(self, event: Any) -> None:  # noqa: ARG002
         if event.new:
             self._execute(event.new)
+
+    def _on_pipeline_change(self, event: Any) -> None:  # noqa: ARG002
+        if event.new:
+            self._execute_aggregation(event.new)
 
     # ------------------------------------------------------------------
     # Public API
@@ -126,10 +138,15 @@ class QueryResults(pn.custom.PyComponent):
     # ------------------------------------------------------------------
 
     def _execute(self, query: dict, names_only: bool = False) -> None:
-        logger.debug("Executing query: %r (names_only=%s)", query, names_only)
+        logger.debug("Executing query: %r (names_only=%s force_backend=%s)", query, names_only, self.force_backend)
         self._tabulator.loading = True
         try:
-            result = retrieve_records(query, projection=_DISPLAY_PROJECTION, names_only=names_only)
+            result = retrieve_records(
+                query,
+                projection=_DISPLAY_PROJECTION,
+                names_only=names_only,
+                force_backend=self.force_backend,
+            )
         except Exception as exc:
             self._status.object = f"**Error:** {exc}"
             self._tabulator.loading = False
@@ -150,6 +167,28 @@ class QueryResults(pn.custom.PyComponent):
         else:
             df = pd.DataFrame({"name": result.asset_names})
 
+        self._tabulator.value = df
+        self._tabulator.loading = False
+
+    def _execute_aggregation(self, pipeline: list) -> None:
+        logger.debug("Executing aggregation: %d stages", len(pipeline))
+        self._tabulator.loading = True
+        try:
+            result = retrieve_aggregation(pipeline)
+        except Exception as exc:
+            self._status.object = f"**Error:** {exc}"
+            self._tabulator.loading = False
+            return
+
+        self._last_result = result
+
+        self._status.object = (
+            f"**Backend:** {result.backend} (aggregation) &nbsp;|&nbsp; "
+            f"**Time:** {result.elapsed_seconds:.2f}s &nbsp;|&nbsp; "
+            f"**Results:** {len(result.records)}"
+        )
+
+        df = _flatten_records(result.records) if result.records else pd.DataFrame()
         self._tabulator.value = df
         self._tabulator.loading = False
 
