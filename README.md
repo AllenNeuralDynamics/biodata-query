@@ -10,9 +10,21 @@ This package supports the creation and deployment of fast queries into metadata 
 
 ### Builder app
 
-The builder app exposes a menu that allows you to select cached fields to construct a query that is guaranteed to run through the cache. The chat menu in the builder app hits the 
+The builder app exposes a menu that allows you to select cached fields to construct a query that is guaranteed to run through the cache. The chat menu in the builder app hits the LLM endpoint to modify the query from natural language.
+
+**Aggregation pipelines:** Paste a JSON array directly into the Query JSON textarea (e.g. `[{"$match": {...}}, {"$group": {...}}]`) and click Submit. The pipeline is sent straight to DocumentDB — it is never routed through the cache and upgrading is not supported.
 
 ### Result app
+
+The `QueryResults` component executes queries and displays results. By default it auto-routes to the local cache when possible. You can override this in code:
+
+```python
+results = QueryResults(force_backend="docdb")   # always hit DocumentDB
+results = QueryResults(force_backend="cache")   # always use local cache (raises if ineligible)
+results = QueryResults(force_backend=None)      # auto-route (default)
+```
+
+`force_backend` has no effect on aggregation pipelines — those always go to DocumentDB.
 
 ## Python library
 
@@ -20,10 +32,21 @@ The python library is the backend that accepts query dictionaries and runs them 
 
 `uv add biodata-query`
 
-```
-from biodata_query.query import run_query
+```python
+from biodata_query.query import retrieve_records, retrieve_aggregation
 
-result = run_query(dict)
+# Auto-routes to local cache when possible, otherwise hits DocumentDB
+result = retrieve_records({"data_description.data_level": "raw"})
+
+# Force a specific backend (raises ValueError if cache is forced but query isn't eligible)
+result = retrieve_records({"data_description.data_level": "raw"}, force_backend="docdb")
+result = retrieve_records({"data_description.data_level": "raw"}, force_backend="cache")
+
+# Run an aggregation pipeline directly against DocumentDB (never cached)
+result = retrieve_aggregation([
+    {"$match": {"data_description.data_level": "raw"}},
+    {"$group": {"_id": "$data_description.project_name", "count": {"$sum": 1}}},
+])
 ```
 
 

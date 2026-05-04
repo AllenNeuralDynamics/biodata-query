@@ -16,7 +16,7 @@ import sys
 import traceback
 from typing import Callable
 
-from biodata_query.query import API_GATEWAY_HOST, QueryResult, run_query
+from biodata_query.query import API_GATEWAY_HOST, QueryResult, retrieve_records, retrieve_aggregation
 from aind_data_access_api.document_db import MetadataDbClient
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -40,7 +40,7 @@ def _run(label: str, fn: Callable[[], None]) -> None:
 
 def _test_empty_query_cache() -> None:
     """Empty query → cache path, non-empty result."""
-    result = run_query({}, names_only=True)
+    result = retrieve_records({}, names_only=True)
     assert result.backend == "cache", f"expected 'cache', got '{result.backend}'"
     assert len(result.asset_names) > 0, "expected at least one asset"
     assert result.records is None
@@ -49,7 +49,7 @@ def _test_empty_query_cache() -> None:
 
 def _test_project_name_filter_cache() -> None:
     """Filter by project_name → should hit the cache."""
-    result = run_query(
+    result = retrieve_records(
         {"data_description.project_name": {"$regex": "Brain", "$options": "i"}},
         names_only=True,
     )
@@ -59,7 +59,7 @@ def _test_project_name_filter_cache() -> None:
 
 def _test_data_level_filter_cache() -> None:
     """Filter by data_level (exact equality) → cache path."""
-    result = run_query({"data_description.data_level": "raw"}, names_only=True)
+    result = retrieve_records({"data_description.data_level": "raw"}, names_only=True)
     assert result.backend == "cache"
     assert len(result.asset_names) > 0
     print(f"    raw assets: {len(result.asset_names)}, elapsed: {result.elapsed_seconds:.2f}s")
@@ -69,7 +69,7 @@ def _test_date_range_filter_cache() -> None:
     """Filter by acquisition_start_time range → cache path."""
     import pandas as pd
 
-    result = run_query(
+    result = retrieve_records(
         {
             "acquisition.acquisition_start_time": {
                 "$gte": pd.Timestamp("2023-01-01"),
@@ -84,7 +84,7 @@ def _test_date_range_filter_cache() -> None:
 
 def _test_non_cache_field_routes_to_docdb() -> None:
     """A field not in FIELD_TO_COLUMN → docdb path."""
-    result = run_query(
+    result = retrieve_records(
         {"data_description.institution.abbreviation": "AIND"},
         names_only=True,
         limit=10,
@@ -96,7 +96,7 @@ def _test_non_cache_field_routes_to_docdb() -> None:
 
 def _test_unsupported_operator_routes_to_docdb() -> None:
     """$elemMatch is unsupported for cache → routes to docdb."""
-    result = run_query(
+    result = retrieve_records(
         {
             "data_description.modalities": {
                 "$elemMatch": {"abbreviation": "ecephys"}
@@ -112,7 +112,7 @@ def _test_unsupported_operator_routes_to_docdb() -> None:
 
 def _test_cache_path_filtered_names() -> None:
     """Cache path with names_only=True returns a non-empty list."""
-    result = run_query({"name": {"$regex": "^ecephys_", "$options": "i"}}, names_only=True)
+    result = retrieve_records({"name": {"$regex": "^ecephys_", "$options": "i"}}, names_only=True)
     assert result.backend == "cache"
     assert result.records is None
     print(f"    cache-filtered assets: {len(result.asset_names)}, elapsed: {result.elapsed_seconds:.2f}s")
@@ -121,7 +121,7 @@ def _test_cache_path_filtered_names() -> None:
 def _test_docdb_fetch_single_record() -> None:
     """Directly verify a DocDB fetch using projection={\"_id\": 1} to stay lightweight."""
     # Get one name from the cache so we know it's valid
-    cache_result = run_query({}, names_only=True)
+    cache_result = retrieve_records({}, names_only=True)
     assert len(cache_result.asset_names) > 0, "cache returned no assets"
     name = cache_result.asset_names[0]
 
@@ -137,7 +137,7 @@ def _test_docdb_fetch_single_record() -> None:
 
 def _test_in_operator_cache() -> None:
     """$in on project_name → cache path."""
-    result = run_query(
+    result = retrieve_records(
         {"data_description.project_name": {"$in": ["Brain Computer Interface", "Omfish"]}},
         names_only=True,
     )
@@ -145,7 +145,71 @@ def _test_in_operator_cache() -> None:
     print(f"    $in results: {len(result.asset_names)}, elapsed: {result.elapsed_seconds:.2f}s")
 
 
-# ── main ───────────────────────────────────────────────────────────────────────
+def _test_force_docdb_on_eligible_query() -> None:
+    """force_backend='docdb' on a cache-eligible query must use DocDB, not cache."""
+    result = retrieve_records(
+        {"data_description.data_level": "raw"},
+        names_only=True,
+        limit=5,
+        force_backend="docdb",
+    )
+    assert result.backend == "docdb", f"expected 'docdb', got '{result.backend}'"
+    assert len(result.asset_names) <= 5
+    print(f"    force docdb results: {len(result.asset_names)}, elapsed: {result.elapsed_seconds:.2f}s")
+
+
+def _test_force_cache_on_eligible_query() -> None:
+    """force_backend='cache' on a cache-eligible query must use cache."""
+    result = retrieve_records(
+        {"data_description.data_level": "raw"},
+        names_only=True,
+        force_backend="cache",
+    )
+    assert result.backend == "cache", f"expected 'cache', got '{result.backend}'"
+    assert len(result.asset_names) > 0
+    print(f"    force cache results: {len(result.asset_names)}, elapsed: {result.elapsed_seconds:.2f}s")
+
+
+def _test_force_cache_raises_for_ineligible() -> None:
+    """force_backend='cache' on an ineligible query must raise ValueError."""
+    raised = False
+    try:
+        retrieve_records(
+            {"data_description.institution.abbreviation": "AIND"},
+            names_only=True,
+            force_backend="cache",
+        )
+    except ValueError:
+        raised = True
+    assert raised, "expected ValueError for ineligible query with force_backend='cache'"
+    print("    ValueError raised as expected")
+
+
+def _test_aggregation_pipeline() -> None:
+    """Aggregation pipeline must execute via DocDB and return records."""
+    result = retrieve_aggregation([
+        {"$match": {"data_description.data_level": "raw"}},
+        {"$limit": 3},
+        {"$project": {"name": 1}},
+    ])
+    assert result.backend == "docdb", f"expected 'docdb', got '{result.backend}'"
+    assert isinstance(result.records, list), "expected records to be a list"
+    assert len(result.records) <= 3
+    print(f"    aggregation results: {len(result.records)}, elapsed: {result.elapsed_seconds:.2f}s")
+
+
+def _test_aggregation_invalid_pipeline() -> None:
+    """Empty pipeline must raise ValueError immediately, without a network call."""
+    raised = False
+    try:
+        retrieve_aggregation([])
+    except ValueError:
+        raised = True
+    assert raised, "expected ValueError for empty pipeline"
+    print("    ValueError raised as expected")
+
+
+
 
 TESTS = [
     ("empty query → cache",                   _test_empty_query_cache),
@@ -157,6 +221,11 @@ TESTS = [
     ("$elemMatch → docdb",                    _test_unsupported_operator_routes_to_docdb),
     ("cache filtered names_only",             _test_cache_path_filtered_names),
     ("docdb fetch with projection",           _test_docdb_fetch_single_record),
+    ("force_backend=docdb on eligible query", _test_force_docdb_on_eligible_query),
+    ("force_backend=cache on eligible query", _test_force_cache_on_eligible_query),
+    ("force_backend=cache raises ineligible", _test_force_cache_raises_for_ineligible),
+    ("aggregation pipeline → docdb",          _test_aggregation_pipeline),
+    ("aggregation invalid pipeline raises",   _test_aggregation_invalid_pipeline),
 ]
 
 
