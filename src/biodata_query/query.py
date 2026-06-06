@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Literal, Optional
@@ -14,6 +15,7 @@ from aind_data_access_api.document_db import MetadataDbClient
 from zombie_squirrel import asset_basics
 
 API_GATEWAY_HOST = "api.allenneuraldynamics.org"
+DOCDB_API_VERSION = os.environ.get("DOCDB_API_VERSION", "v2")
 
 # Mapping from MongoDB document field paths to asset_basics column names
 FIELD_TO_COLUMN: dict[str, str] = {
@@ -183,8 +185,16 @@ def _apply_filter_to_dataframe(df: pd.DataFrame, query: dict) -> pd.DataFrame:
                 mask &= _modality_series_contains(series, value)
 
         elif col in _DATETIME_COLUMNS:
-            series_dt = _to_utc_series(series)
-            if isinstance(value, dict):
+            if isinstance(value, dict) and "$regex" in value:
+                case_insensitive = "i" in value.get("$options", "")
+                mask &= series.str.contains(
+                    value["$regex"],
+                    case=not case_insensitive,
+                    na=False,
+                    regex=True,
+                )
+            elif isinstance(value, dict):
+                series_dt = _to_utc_series(series)
                 for op, operand in value.items():
                     operand_ts = _to_utc_timestamp(operand)
                     if op == "$gte":
@@ -196,6 +206,7 @@ def _apply_filter_to_dataframe(df: pd.DataFrame, query: dict) -> pd.DataFrame:
                     elif op == "$lt":
                         mask &= series_dt < operand_ts
             else:
+                series_dt = _to_utc_series(series)
                 mask &= series_dt == _to_utc_timestamp(value)
 
         else:
@@ -230,7 +241,7 @@ def _fetch_full_records_batched(names: list[str], batch_size: int = 50) -> list[
     """Fetch full records from DocDB by batching $in queries on the name field."""
     if not names:
         return []
-    client = MetadataDbClient(host=API_GATEWAY_HOST)
+    client = MetadataDbClient(host=API_GATEWAY_HOST, version=DOCDB_API_VERSION)
     records = []
     for i in range(0, len(names), batch_size):
         batch = names[i : i + batch_size]
@@ -309,7 +320,7 @@ def retrieve_records(
     else:
         result_df = None
         logger.debug("Routing to docdb backend")
-        client = MetadataDbClient(host=API_GATEWAY_HOST)
+        client = MetadataDbClient(host=API_GATEWAY_HOST, version=DOCDB_API_VERSION)
         if names_only:
             kwargs: dict = {"filter_query": filter_query, "projection": {"name": 1}}
             if limit:
@@ -366,7 +377,7 @@ def retrieve_aggregation(pipeline: list) -> QueryResult:
     logger.debug("retrieve_aggregation called: %d stages", len(pipeline))
     start = time.time()
 
-    client = MetadataDbClient(host=API_GATEWAY_HOST)
+    client = MetadataDbClient(host=API_GATEWAY_HOST, version=DOCDB_API_VERSION)
     records = client.aggregate_docdb_records(pipeline=pipeline)
     names = [r["name"] for r in records if "name" in r]
 

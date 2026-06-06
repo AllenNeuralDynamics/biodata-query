@@ -304,6 +304,27 @@ class TestApplyFilterToDataframe:
         )
         assert set(result["name"]) == {"asset-B", "asset-C"}
 
+    def test_regex_on_datetime_column(self, sample_df):
+        # $regex on a datetime column matches against the raw ISO-8601 string
+        result = _apply_filter_to_dataframe(
+            sample_df,
+            {"acquisition.acquisition_start_time": {"$regex": "^2024-0[12]"}},
+        )
+        assert set(result["name"]) == {"asset-A", "asset-B"}
+
+    def test_regex_case_insensitive_on_datetime_column(self, sample_df):
+        # $options "i" is honoured even for datetime columns
+        result = _apply_filter_to_dataframe(
+            sample_df,
+            {
+                "acquisition.acquisition_start_time": {
+                    "$regex": "^2024-04",
+                    "$options": "i",
+                }
+            },
+        )
+        assert list(result["name"]) == ["asset-D"]
+
     # Multiple top-level keys (implicit AND)
 
     def test_multiple_keys_and_both_match(self, sample_df):

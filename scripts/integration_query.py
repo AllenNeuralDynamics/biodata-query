@@ -16,7 +16,7 @@ import sys
 import traceback
 from typing import Callable
 
-from biodata_query.query import API_GATEWAY_HOST, QueryResult, retrieve_records, retrieve_aggregation
+from biodata_query.query import API_GATEWAY_HOST, DOCDB_API_VERSION, QueryResult, retrieve_records, retrieve_aggregation
 from aind_data_access_api.document_db import MetadataDbClient
 
 # ── helpers ────────────────────────────────────────────────────────────────────
@@ -125,7 +125,7 @@ def _test_docdb_fetch_single_record() -> None:
     assert len(cache_result.asset_names) > 0, "cache returned no assets"
     name = cache_result.asset_names[0]
 
-    client = MetadataDbClient(host=API_GATEWAY_HOST)
+    client = MetadataDbClient(host=API_GATEWAY_HOST, version=DOCDB_API_VERSION)
     records = client.retrieve_docdb_records(
         filter_query={"name": name},
         projection={"_id": 1},
@@ -209,6 +209,32 @@ def _test_aggregation_invalid_pipeline() -> None:
     print("    ValueError raised as expected")
 
 
+def _test_openscope_2025_cache_vs_docdb() -> None:
+    """Combined date-range + project_name regex: cache and docdb must return identical asset names."""
+    query = {
+        "acquisition.acquisition_start_time": {
+            "$regex": "^2025-",
+        },
+        "data_description.project_name": "OpenScope",
+    }
+    cache_result = retrieve_records(query, names_only=True, force_backend="cache")
+    docdb_result = retrieve_records(query, names_only=True, force_backend="docdb")
+    assert cache_result.backend == "cache", f"expected 'cache', got '{cache_result.backend}'"
+    assert docdb_result.backend == "docdb", f"expected 'docdb', got '{docdb_result.backend}'"
+    cache_names = sorted(cache_result.asset_names)
+    docdb_names = sorted(docdb_result.asset_names)
+    assert cache_names == docdb_names, (
+        f"cache ({len(cache_names)}) and docdb ({len(docdb_names)}) results differ.\n"
+        f"  only in cache: {sorted(set(cache_names) - set(docdb_names))}\n"
+        f"  only in docdb: {sorted(set(docdb_names) - set(cache_names))}"
+    )
+    print(
+        f"    matching assets: {len(cache_names)}, "
+        f"cache elapsed: {cache_result.elapsed_seconds:.2f}s, "
+        f"docdb elapsed: {docdb_result.elapsed_seconds:.2f}s"
+    )
+
+
 
 
 TESTS = [
@@ -226,6 +252,7 @@ TESTS = [
     ("force_backend=cache raises ineligible", _test_force_cache_raises_for_ineligible),
     ("aggregation pipeline → docdb",          _test_aggregation_pipeline),
     ("aggregation invalid pipeline raises",   _test_aggregation_invalid_pipeline),
+    ("OpenScope 2025: cache == docdb",        _test_openscope_2025_cache_vs_docdb),
 ]
 
 

@@ -67,6 +67,14 @@ The endpoint handler (`biodata_query.llm.endpoint.handle_get_query`) follows the
 |---|---|---|
 | `BEDROCK_ROLE_ARN` | no | IAM role ARN to assume via STS before calling Bedrock. If unset, the default AWS profile / execution role is used directly. |
 
+## Environment variables
+
+These variables apply to the library and Panel apps, regardless of deployment target.
+
+| Variable | Default | Description |
+|---|---|---|
+| `DOCDB_API_VERSION` | `v2` | API version passed to `MetadataDbClient` when querying DocumentDB. Set to `v1` to target the legacy endpoint. |
+
 Example (Lambda console or `serverless.yml`):
 ```
 BEDROCK_ROLE_ARN=arn:aws:iam::024848463001:role/bedrock-access-CO
