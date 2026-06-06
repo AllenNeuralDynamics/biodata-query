@@ -16,8 +16,8 @@ import sys
 import traceback
 from typing import Callable
 
-from biodata_query.query import API_GATEWAY_HOST, DOCDB_API_VERSION, QueryResult, retrieve_records, retrieve_aggregation
 from aind_data_access_api.document_db import MetadataDbClient
+from biodata_query.query import API_GATEWAY_HOST, DOCDB_API_VERSION, QueryResult, retrieve_records, retrieve_aggregation
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
