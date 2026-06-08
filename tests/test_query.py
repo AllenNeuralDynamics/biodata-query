@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import call, patch
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -14,7 +15,9 @@ from biodata_query.query import (
     _fetch_full_records_batched,
     _has_unsupported_operators,
     _modality_series_contains,
+    _modality_series_contains_all,
     _modality_series_contains_any,
+    _modality_series_regex,
     _projection_is_cache_servable,
     _to_utc_series,
     _to_utc_timestamp,
@@ -31,16 +34,20 @@ from biodata_query.query import (
 def sample_df():
     """Small DataFrame mimicking real asset_basics() output.
 
-    All columns are plain Python strings, matching the actual parquet schema:
     - datetime columns store ISO-8601 strings with timezone offsets
-    - modalities is a comma-separated string of abbreviation terms
+    - modalities is a numpy array of abbreviation strings, as returned by zombie_squirrel
     """
     return pd.DataFrame(
         {
             "name": ["asset-A", "asset-B", "asset-C", "asset-D"],
             "project_name": ["ProjectX", "ProjectX", "ProjectY", "ProjectY"],
-            # comma-separated modality abbreviations, as returned by zombie_squirrel
-            "modalities": ["ecephys", "behavior, behavior-videos", "ecephys, fMRI", "fMRI"],
+            # numpy arrays of modality abbreviations, as returned by zombie_squirrel
+            "modalities": [
+                np.array(["ecephys"]),
+                np.array(["behavior", "behavior-videos"]),
+                np.array(["ecephys", "fMRI"]),
+                np.array(["fMRI"]),
+            ],
             "data_level": ["raw", "derived", "raw", "raw"],
             "subject_id": ["100", "200", "300", "400"],
             "genotype": ["wt/wt", "wt/Cre", "wt/wt", "Cre/Cre"],
@@ -175,8 +182,14 @@ class TestIsCacheEligible:
     def test_not_value_not_eligible(self):
         assert is_cache_eligible({"name": {"$not": {"$regex": "foo"}}}) is False
 
-    def test_elemMatch_value_not_eligible(self):
+    def test_elemMatch_on_array_column_eligible(self):
+        # $elemMatch on a known array column (modalities) is supported by the cache
         query = {"data_description.modality": {"$elemMatch": {"abbreviation": "ecephys"}}}
+        assert is_cache_eligible(query) is True
+
+    def test_elemMatch_on_non_array_column_not_eligible(self):
+        # $elemMatch on a non-array column is not supported
+        query = {"name": {"$elemMatch": {"abbreviation": "ecephys"}}}
         assert is_cache_eligible(query) is False
 
     def test_exists_value_not_eligible(self):
@@ -420,13 +433,19 @@ class TestApplyFilterToDataframe:
         )
         assert len(result) == 0
 
-    def test_modality_regex_searches_raw_string(self, sample_df):
-        # $regex on modalities operates on the full comma-separated string
+    def test_modality_regex_searches_elements(self, sample_df):
+        # $regex on modalities matches against each abbreviation element
         result = _apply_filter_to_dataframe(
             sample_df, {"data_description.modality": {"$regex": "behavior"}}
         )
-        # "behavior, behavior-videos" contains "behavior" — asset-B
+        # asset-B has ["behavior", "behavior-videos"] — both elements match
         assert set(result["name"]) == {"asset-B"}
+
+    def test_modality_elemMatch_abbreviation(self, sample_df):
+        result = _apply_filter_to_dataframe(
+            sample_df, {"data_description.modalities": {"$elemMatch": {"abbreviation": "ecephys"}}}
+        )
+        assert set(result["name"]) == {"asset-A", "asset-C"}
 
 
 # ── datetime helpers ─────────────────────────────────────────────────────────
@@ -481,61 +500,61 @@ class TestToUtcSeries:
 
 class TestModalitySeriesContains:
     def _make(self, values):
-        return pd.Series(values)
+        return pd.Series([np.array(v) for v in values])
 
     def test_single_modality_exact_match(self):
-        s = self._make(["ecephys", "behavior", "fMRI"])
+        s = self._make([["ecephys"], ["behavior"], ["fMRI"]])
         result = _modality_series_contains(s, "ecephys")
         assert list(result) == [True, False, False]
 
     def test_multi_modality_exact_term_match(self):
-        s = self._make(["ecephys, fMRI", "behavior, behavior-videos"])
+        s = self._make([["ecephys", "fMRI"], ["behavior", "behavior-videos"]])
         result = _modality_series_contains(s, "fMRI")
         assert list(result) == [True, False]
 
     def test_no_partial_match(self):
         # "behavior" must not match "behavior-videos"
-        s = self._make(["behavior-videos", "behavior"])
+        s = self._make([["behavior-videos"], ["behavior"]])
         result = _modality_series_contains(s, "behavior")
         assert list(result) == [False, True]
 
     def test_nan_values_return_false(self):
-        s = pd.Series([None, "ecephys"])
+        s = pd.Series([None, np.array(["ecephys"])])
         result = _modality_series_contains(s, "ecephys")
         assert list(result) == [False, True]
 
     def test_no_match_returns_all_false(self):
-        s = self._make(["ecephys", "behavior"])
+        s = self._make([["ecephys"], ["behavior"]])
         result = _modality_series_contains(s, "SPIM")
         assert list(result) == [False, False]
 
 
 class TestModalitySeriesContainsAny:
     def _make(self, values):
-        return pd.Series(values)
+        return pd.Series([np.array(v) for v in values])
 
     def test_single_value_set(self):
-        s = self._make(["ecephys", "behavior", "fMRI"])
+        s = self._make([["ecephys"], ["behavior"], ["fMRI"]])
         result = _modality_series_contains_any(s, ["ecephys"])
         assert list(result) == [True, False, False]
 
     def test_multiple_values_or_logic(self):
-        s = self._make(["ecephys", "behavior", "fMRI", "ecephys, fMRI"])
+        s = self._make([["ecephys"], ["behavior"], ["fMRI"], ["ecephys", "fMRI"]])
         result = _modality_series_contains_any(s, ["ecephys", "behavior"])
         assert list(result) == [True, True, False, True]
 
     def test_multi_modality_row_any_match(self):
-        s = self._make(["behavior, behavior-videos, ecephys"])
+        s = self._make([["behavior", "behavior-videos", "ecephys"]])
         result = _modality_series_contains_any(s, ["SPIM", "ecephys"])
         assert list(result) == [True]
 
     def test_empty_values_list_returns_all_false(self):
-        s = self._make(["ecephys", "behavior"])
+        s = self._make([["ecephys"], ["behavior"]])
         result = _modality_series_contains_any(s, [])
         assert list(result) == [False, False]
 
     def test_nan_values_return_false(self):
-        s = pd.Series([None, "ecephys"])
+        s = pd.Series([None, np.array(["ecephys"])])
         result = _modality_series_contains_any(s, ["ecephys"])
         assert list(result) == [False, True]
 
@@ -622,7 +641,7 @@ def small_df():
         {
             "name": ["asset-A", "asset-B"],
             "project_name": ["ProjectX", "ProjectY"],
-            "modalities": ["ecephys", "behavior"],
+            "modalities": [np.array(["ecephys"]), np.array(["behavior"])],
             "data_level": ["raw", "derived"],
             "subject_id": ["100", "200"],
             "genotype": ["wt/wt", "wt/Cre"],
@@ -637,7 +656,7 @@ class TestRunQuery:
     # Cache path
 
     def test_cache_path_names_only(self, small_df):
-        with patch("biodata_query.query.asset_basics", return_value=small_df):
+        with patch("biodata_query.query._asset_basics_cached", return_value=small_df):
             result = retrieve_records({"data_description.project_name": "ProjectX"}, names_only=True)
 
         assert result.backend == "cache"
@@ -647,7 +666,7 @@ class TestRunQuery:
     def test_cache_path_full_records(self, small_df):
         fake_records = [{"name": "asset-A", "data_description": {}}]
         with (
-            patch("biodata_query.query.asset_basics", return_value=small_df),
+            patch("biodata_query.query._asset_basics_cached", return_value=small_df),
             patch(
                 "biodata_query.query._fetch_full_records_batched", return_value=fake_records
             ) as mock_fetch,
@@ -660,7 +679,7 @@ class TestRunQuery:
         mock_fetch.assert_called_once_with(["asset-A"])
 
     def test_cache_path_empty_query_returns_all(self, small_df):
-        with patch("biodata_query.query.asset_basics", return_value=small_df):
+        with patch("biodata_query.query._asset_basics_cached", return_value=small_df):
             result = retrieve_records({}, names_only=True)
 
         assert result.backend == "cache"
@@ -668,7 +687,7 @@ class TestRunQuery:
 
     def test_cache_path_no_results_still_calls_fetch(self, small_df):
         with (
-            patch("biodata_query.query.asset_basics", return_value=small_df),
+            patch("biodata_query.query._asset_basics_cached", return_value=small_df),
             patch(
                 "biodata_query.query._fetch_full_records_batched", return_value=[]
             ) as mock_fetch,
@@ -721,20 +740,20 @@ class TestRunQuery:
     # QueryResult structure
 
     def test_result_is_query_result_instance(self, small_df):
-        with patch("biodata_query.query.asset_basics", return_value=small_df):
+        with patch("biodata_query.query._asset_basics_cached", return_value=small_df):
             result = retrieve_records({}, names_only=True)
 
         assert isinstance(result, QueryResult)
 
     def test_elapsed_seconds_is_non_negative(self, small_df):
-        with patch("biodata_query.query.asset_basics", return_value=small_df):
+        with patch("biodata_query.query._asset_basics_cached", return_value=small_df):
             result = retrieve_records({}, names_only=True)
 
         assert result.elapsed_seconds >= 0
 
     def test_names_only_false_records_not_none_for_cache(self, small_df):
         with (
-            patch("biodata_query.query.asset_basics", return_value=small_df),
+            patch("biodata_query.query._asset_basics_cached", return_value=small_df),
             patch("biodata_query.query._fetch_full_records_batched", return_value=[{"name": "asset-A"}]),
         ):
             result = retrieve_records({"name": "asset-A"}, names_only=False)
@@ -744,14 +763,14 @@ class TestRunQuery:
     # limit parameter
 
     def test_limit_applied_on_cache_path(self, small_df):
-        with patch("biodata_query.query.asset_basics", return_value=small_df):
+        with patch("biodata_query.query._asset_basics_cached", return_value=small_df):
             result = retrieve_records({}, names_only=True, limit=1)
 
         assert result.backend == "cache"
         assert len(result.asset_names) == 1
 
     def test_limit_zero_means_no_limit_on_cache_path(self, small_df):
-        with patch("biodata_query.query.asset_basics", return_value=small_df):
+        with patch("biodata_query.query._asset_basics_cached", return_value=small_df):
             result = retrieve_records({}, names_only=True, limit=0)
 
         assert len(result.asset_names) == 2  # both rows in small_df
@@ -784,7 +803,7 @@ class TestRunQuery:
             "data_description.project_name": 1,
         }
         with (
-            patch("biodata_query.query.asset_basics", return_value=small_df),
+            patch("biodata_query.query._asset_basics_cached", return_value=small_df),
             patch("biodata_query.query._fetch_full_records_batched") as mock_fetch,
         ):
             result = retrieve_records(
@@ -804,7 +823,7 @@ class TestRunQuery:
         projection = {"name": 1, "data_description.institution": 1}  # institution not in FIELD_TO_COLUMN
         fake_records = [{"name": "asset-A"}]
         with (
-            patch("biodata_query.query.asset_basics", return_value=small_df),
+            patch("biodata_query.query._asset_basics_cached", return_value=small_df),
             patch(
                 "biodata_query.query._fetch_full_records_batched", return_value=fake_records
             ) as mock_fetch,
@@ -823,7 +842,7 @@ class TestRunQuery:
         """projection=None (default) is treated as non-cache-servable for safety."""
         fake_records = [{"name": "asset-A"}]
         with (
-            patch("biodata_query.query.asset_basics", return_value=small_df),
+            patch("biodata_query.query._asset_basics_cached", return_value=small_df),
             patch(
                 "biodata_query.query._fetch_full_records_batched", return_value=fake_records
             ) as mock_fetch,
@@ -841,7 +860,7 @@ class TestRunQuery:
         """names_only=True never fetches or returns a dataframe regardless of projection."""
         projection = {"name": 1, "data_description.project_name": 1}
         with (
-            patch("biodata_query.query.asset_basics", return_value=small_df),
+            patch("biodata_query.query._asset_basics_cached", return_value=small_df),
             patch("biodata_query.query._fetch_full_records_batched") as mock_fetch,
         ):
             result = retrieve_records({}, names_only=True, projection=projection)
@@ -909,7 +928,7 @@ class TestRetrieveRecordsForceBackend:
     """Tests for the force_backend parameter of retrieve_records."""
 
     def test_force_cache_uses_cache_for_eligible_query(self, small_df):
-        with patch("biodata_query.query.asset_basics", return_value=small_df):
+        with patch("biodata_query.query._asset_basics_cached", return_value=small_df):
             result = retrieve_records(
                 {"data_description.project_name": "ProjectX"},
                 names_only=True,
@@ -923,7 +942,7 @@ class TestRetrieveRecordsForceBackend:
         query = {"data_description.project_name": "ProjectX"}
         fake_raw = [{"name": "asset-A"}]
         with (
-            patch("biodata_query.query.asset_basics", return_value=small_df) as mock_cache,
+            patch("biodata_query.query._asset_basics_cached", return_value=small_df) as mock_cache,
             patch("biodata_query.query.MetadataDbClient") as mock_cls,
         ):
             mock_cls.return_value.retrieve_docdb_records.return_value = fake_raw
@@ -948,7 +967,7 @@ class TestRetrieveRecordsForceBackend:
         assert result.backend == "docdb"
 
     def test_force_none_auto_routes_eligible_to_cache(self, small_df):
-        with patch("biodata_query.query.asset_basics", return_value=small_df):
+        with patch("biodata_query.query._asset_basics_cached", return_value=small_df):
             result = retrieve_records({}, names_only=True, force_backend=None)
         assert result.backend == "cache"
 
@@ -1038,8 +1057,662 @@ class TestRetrieveAggregation:
         pipeline = [{"$match": {}}]
         with (
             patch("biodata_query.query.MetadataDbClient") as mock_cls,
-            patch("biodata_query.query.asset_basics") as mock_cache,
+            patch("biodata_query.query._asset_basics_cached") as mock_cache,
         ):
             mock_cls.return_value.aggregate_docdb_records.return_value = []
             retrieve_aggregation(pipeline)
         mock_cache.assert_not_called()
+
+
+# ── _modality_series_contains_all ─────────────────────────────────────────────
+
+
+class TestModalitySeriesContainsAll:
+    def _make(self, values):
+        return pd.Series([np.array(v) for v in values])
+
+    def test_all_present(self):
+        s = self._make([["ecephys", "fMRI"], ["behavior"]])
+        result = _modality_series_contains_all(s, ["ecephys", "fMRI"])
+        assert list(result) == [True, False]
+
+    def test_subset_not_sufficient(self):
+        s = self._make([["ecephys"], ["ecephys", "fMRI"]])
+        result = _modality_series_contains_all(s, ["ecephys", "fMRI"])
+        assert list(result) == [False, True]
+
+    def test_single_value_in_all(self):
+        s = self._make([["ecephys"], ["behavior"], ["ecephys", "fMRI"]])
+        result = _modality_series_contains_all(s, ["ecephys"])
+        assert list(result) == [True, False, True]
+
+    def test_empty_values_returns_all_true(self):
+        s = self._make([["ecephys"], ["behavior"]])
+        result = _modality_series_contains_all(s, [])
+        assert list(result) == [True, True]
+
+    def test_nan_values_return_false(self):
+        s = pd.Series([None, np.array(["ecephys", "fMRI"])])
+        result = _modality_series_contains_all(s, ["ecephys", "fMRI"])
+        assert list(result) == [False, True]
+
+    def test_superset_matches(self):
+        s = self._make([["ecephys", "fMRI", "behavior"]])
+        result = _modality_series_contains_all(s, ["ecephys", "fMRI"])
+        assert list(result) == [True]
+
+    def test_no_match_at_all(self):
+        s = self._make([["behavior"], ["fMRI"]])
+        result = _modality_series_contains_all(s, ["ecephys", "SPIM"])
+        assert list(result) == [False, False]
+
+
+# ── _modality_series_regex ────────────────────────────────────────────────────
+
+
+class TestModalitySeriesRegex:
+    def _make(self, values):
+        return pd.Series([np.array(v) for v in values])
+
+    def test_simple_regex_match(self):
+        s = self._make([["ecephys"], ["behavior"], ["behavior-videos"]])
+        result = _modality_series_regex(s, "behavior", case_insensitive=False)
+        assert list(result) == [False, True, True]
+
+    def test_anchored_regex(self):
+        s = self._make([["ecephys"], ["behavior"], ["behavior-videos"]])
+        result = _modality_series_regex(s, "^behavior$", case_insensitive=False)
+        assert list(result) == [False, True, False]
+
+    def test_case_sensitive_no_match(self):
+        s = self._make([["ecephys"], ["Ecephys"]])
+        result = _modality_series_regex(s, "ecephys", case_insensitive=False)
+        assert list(result) == [True, False]
+
+    def test_case_insensitive_matches(self):
+        s = self._make([["ecephys"], ["Ecephys"], ["ECEPHYS"]])
+        result = _modality_series_regex(s, "ecephys", case_insensitive=True)
+        assert list(result) == [True, True, True]
+
+    def test_regex_no_match(self):
+        s = self._make([["ecephys"], ["behavior"]])
+        result = _modality_series_regex(s, "^SPIM$", case_insensitive=False)
+        assert list(result) == [False, False]
+
+    def test_any_element_in_array_matches(self):
+        s = self._make([["behavior", "ecephys"], ["fMRI"]])
+        result = _modality_series_regex(s, "ecephys", case_insensitive=False)
+        assert list(result) == [True, False]
+
+    def test_nan_values_return_false(self):
+        s = pd.Series([None, np.array(["ecephys"])])
+        result = _modality_series_regex(s, "ecephys", case_insensitive=False)
+        assert list(result) == [False, True]
+
+    def test_partial_pattern_match(self):
+        s = self._make([["behavior-videos"], ["behavior"]])
+        result = _modality_series_regex(s, "video", case_insensitive=False)
+        assert list(result) == [True, False]
+
+
+# ── _apply_filter_to_dataframe: comprehensive cache query coverage ────────────
+
+
+class TestApplyFilterCacheQueries:
+    """Exhaustive tests for every MongoDB query pattern supported by the cache path.
+
+    These verify that _apply_filter_to_dataframe produces the same result set
+    as an equivalent real MongoDB query would against the same data.
+    """
+
+    @pytest.fixture
+    def df(self):
+        """Extended DataFrame exercising all mapped columns and edge cases."""
+        return pd.DataFrame(
+            {
+                "name": ["asset-A", "asset-B", "asset-C", "asset-D", "asset-E"],
+                "project_name": ["ProjectX", "ProjectX", "ProjectY", "ProjectY", "ProjectZ"],
+                "modalities": [
+                    np.array(["ecephys"]),
+                    np.array(["behavior", "behavior-videos"]),
+                    np.array(["ecephys", "fMRI"]),
+                    np.array(["fMRI"]),
+                    np.array(["SPIM"]),
+                ],
+                "data_level": ["raw", "derived", "raw", "raw", "derived"],
+                "subject_id": ["100", "200", "300", "400", "500"],
+                "genotype": ["wt/wt", "wt/Cre", "wt/wt", "Cre/Cre", "het/wt"],
+                "acquisition_start_time": [
+                    "2024-01-01 00:00:00+00:00",
+                    "2024-02-01 00:00:00+00:00",
+                    "2024-03-01 00:00:00+00:00",
+                    "2024-04-01 00:00:00+00:00",
+                    "2024-05-01 00:00:00+00:00",
+                ],
+                "acquisition_end_time": [
+                    "2024-01-02 00:00:00+00:00",
+                    "2024-02-02 00:00:00+00:00",
+                    "2024-03-02 00:00:00+00:00",
+                    "2024-04-02 00:00:00+00:00",
+                    "2024-05-02 00:00:00+00:00",
+                ],
+                "process_date": [
+                    "2024-01-10 00:00:00+00:00",
+                    "2024-02-10 00:00:00+00:00",
+                    "2024-03-10 00:00:00+00:00",
+                    "2024-04-10 00:00:00+00:00",
+                    "2024-05-10 00:00:00+00:00",
+                ],
+            }
+        )
+
+    # ── $all on modalities ────────────────────────────────────────────────
+
+    def test_modality_all_single_value(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"data_description.modality": {"$all": ["ecephys"]}}
+        )
+        assert set(result["name"]) == {"asset-A", "asset-C"}
+
+    def test_modality_all_multiple_values(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"data_description.modality": {"$all": ["ecephys", "fMRI"]}}
+        )
+        assert set(result["name"]) == {"asset-C"}
+
+    def test_modality_all_no_match(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"data_description.modality": {"$all": ["ecephys", "SPIM"]}}
+        )
+        assert len(result) == 0
+
+    def test_modality_all_empty_list_returns_all(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"data_description.modality": {"$all": []}}
+        )
+        assert len(result) == 5
+
+    # ── Modality $regex with case insensitive ─────────────────────────────
+
+    def test_modality_regex_case_insensitive(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"data_description.modality": {"$regex": "fmri", "$options": "i"}}
+        )
+        assert set(result["name"]) == {"asset-C", "asset-D"}
+
+    def test_modality_regex_case_sensitive_no_match(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"data_description.modality": {"$regex": "fmri"}}
+        )
+        assert len(result) == 0
+
+    def test_modality_regex_partial_match(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"data_description.modality": {"$regex": "behavior"}}
+        )
+        # "behavior" and "behavior-videos" both contain "behavior"
+        assert set(result["name"]) == {"asset-B"}
+
+    def test_modality_regex_anchored_exact(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"data_description.modality": {"$regex": "^ecephys$"}}
+        )
+        assert set(result["name"]) == {"asset-A", "asset-C"}
+
+    # ── data_description.modalities.abbreviation path alias ───────────────
+
+    def test_modalities_abbreviation_path_equality(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"data_description.modalities.abbreviation": "SPIM"}
+        )
+        assert set(result["name"]) == {"asset-E"}
+
+    def test_modalities_abbreviation_path_in(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"data_description.modalities.abbreviation": {"$in": ["ecephys", "SPIM"]}}
+        )
+        assert set(result["name"]) == {"asset-A", "asset-C", "asset-E"}
+
+    def test_modalities_abbreviation_path_all(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"data_description.modalities.abbreviation": {"$all": ["ecephys", "fMRI"]}}
+        )
+        assert set(result["name"]) == {"asset-C"}
+
+    def test_modalities_abbreviation_path_regex(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"data_description.modalities.abbreviation": {"$regex": "^SP", "$options": "i"}}
+        )
+        assert set(result["name"]) == {"asset-E"}
+
+    def test_modalities_abbreviation_path_elemMatch(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"data_description.modalities.abbreviation": {"$elemMatch": {"abbreviation": "fMRI"}}}
+        )
+        assert set(result["name"]) == {"asset-C", "asset-D"}
+
+    # ── Datetime exact equality ───────────────────────────────────────────
+
+    def test_datetime_exact_equality_string(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"acquisition.acquisition_start_time": "2024-01-01"}
+        )
+        assert set(result["name"]) == {"asset-A"}
+
+    def test_datetime_exact_equality_timestamp(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"acquisition.acquisition_start_time": pd.Timestamp("2024-03-01", tz="UTC")}
+        )
+        assert set(result["name"]) == {"asset-C"}
+
+    def test_datetime_exact_equality_no_match(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"acquisition.acquisition_start_time": "2099-01-01"}
+        )
+        assert len(result) == 0
+
+    # ── process_date with comparison operators ────────────────────────────
+
+    def test_process_date_gte(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"process_date": {"$gte": "2024-04-10"}}
+        )
+        assert set(result["name"]) == {"asset-D", "asset-E"}
+
+    def test_process_date_lte(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"process_date": {"$lte": "2024-02-10"}}
+        )
+        assert set(result["name"]) == {"asset-A", "asset-B"}
+
+    def test_process_date_gt(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"process_date": {"$gt": "2024-04-10"}}
+        )
+        assert set(result["name"]) == {"asset-E"}
+
+    def test_process_date_lt(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"process_date": {"$lt": "2024-02-10"}}
+        )
+        assert set(result["name"]) == {"asset-A"}
+
+    def test_process_date_range(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"process_date": {"$gte": "2024-02-10", "$lte": "2024-04-10"}}
+        )
+        assert set(result["name"]) == {"asset-B", "asset-C", "asset-D"}
+
+    def test_process_date_regex(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"process_date": {"$regex": "^2024-05"}}
+        )
+        assert set(result["name"]) == {"asset-E"}
+
+    # ── acquisition_end_time with comparison operators ────────────────────
+
+    def test_acquisition_end_time_gte(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"acquisition.acquisition_end_time": {"$gte": "2024-04-02"}}
+        )
+        assert set(result["name"]) == {"asset-D", "asset-E"}
+
+    def test_acquisition_end_time_lte(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"acquisition.acquisition_end_time": {"$lte": "2024-02-02"}}
+        )
+        assert set(result["name"]) == {"asset-A", "asset-B"}
+
+    def test_acquisition_end_time_range(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"acquisition.acquisition_end_time": {"$gte": "2024-02-02", "$lt": "2024-04-02"}}
+        )
+        assert set(result["name"]) == {"asset-B", "asset-C"}
+
+    def test_acquisition_end_time_regex(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"acquisition.acquisition_end_time": {"$regex": "2024-03"}}
+        )
+        assert set(result["name"]) == {"asset-C"}
+
+    # ── Comparison operators on scalar (non-datetime) columns ─────────────
+
+    def test_scalar_gte_on_subject_id(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"subject.subject_id": {"$gte": "400"}}
+        )
+        assert set(result["name"]) == {"asset-D", "asset-E"}
+
+    def test_scalar_lte_on_subject_id(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"subject.subject_id": {"$lte": "200"}}
+        )
+        assert set(result["name"]) == {"asset-A", "asset-B"}
+
+    def test_scalar_gt_on_subject_id(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"subject.subject_id": {"$gt": "400"}}
+        )
+        assert set(result["name"]) == {"asset-E"}
+
+    def test_scalar_lt_on_subject_id(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"subject.subject_id": {"$lt": "200"}}
+        )
+        assert set(result["name"]) == {"asset-A"}
+
+    def test_scalar_range_on_subject_id(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"subject.subject_id": {"$gte": "200", "$lte": "400"}}
+        )
+        assert set(result["name"]) == {"asset-B", "asset-C", "asset-D"}
+
+    # ── $in on scalar columns ─────────────────────────────────────────────
+
+    def test_in_on_subject_id(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"subject.subject_id": {"$in": ["100", "300", "500"]}}
+        )
+        assert set(result["name"]) == {"asset-A", "asset-C", "asset-E"}
+
+    def test_in_on_data_level(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"data_description.data_level": {"$in": ["derived"]}}
+        )
+        assert set(result["name"]) == {"asset-B", "asset-E"}
+
+    def test_in_on_genotype(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"subject.subject_details.genotype": {"$in": ["wt/wt", "Cre/Cre"]}}
+        )
+        assert set(result["name"]) == {"asset-A", "asset-C", "asset-D"}
+
+    # ── $regex on scalar columns ──────────────────────────────────────────
+
+    def test_regex_on_project_name(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"data_description.project_name": {"$regex": "^Project[XY]$"}}
+        )
+        assert set(result["name"]) == {"asset-A", "asset-B", "asset-C", "asset-D"}
+
+    def test_regex_on_subject_id(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"subject.subject_id": {"$regex": "^[13]00$"}}
+        )
+        assert set(result["name"]) == {"asset-A", "asset-C"}
+
+    def test_regex_case_insensitive_on_genotype(self, df):
+        result = _apply_filter_to_dataframe(
+            df, {"subject.subject_details.genotype": {"$regex": "CRE", "$options": "i"}}
+        )
+        assert set(result["name"]) == {"asset-B", "asset-D"}
+
+    # ── Complex multi-field AND queries (realistic LLM-generated) ─────────
+
+    def test_project_and_modality_and_date_range(self, df):
+        result = _apply_filter_to_dataframe(
+            df,
+            {
+                "data_description.project_name": "ProjectY",
+                "data_description.modality": "fMRI",
+                "acquisition.acquisition_start_time": {"$gte": "2024-03-01", "$lte": "2024-04-01"},
+            },
+        )
+        assert set(result["name"]) == {"asset-C", "asset-D"}
+
+    def test_modality_in_and_data_level_and_genotype_regex(self, df):
+        result = _apply_filter_to_dataframe(
+            df,
+            {
+                "data_description.modality": {"$in": ["ecephys", "fMRI"]},
+                "data_description.data_level": "raw",
+                "subject.subject_details.genotype": {"$regex": "wt"},
+            },
+        )
+        assert set(result["name"]) == {"asset-A", "asset-C"}
+
+    def test_subject_id_in_and_process_date_range(self, df):
+        result = _apply_filter_to_dataframe(
+            df,
+            {
+                "subject.subject_id": {"$in": ["100", "200", "300"]},
+                "process_date": {"$gte": "2024-02-01", "$lte": "2024-03-15"},
+            },
+        )
+        assert set(result["name"]) == {"asset-B", "asset-C"}
+
+    def test_name_regex_and_modality_all(self, df):
+        result = _apply_filter_to_dataframe(
+            df,
+            {
+                "name": {"$regex": "asset-[A-C]"},
+                "data_description.modalities": {"$all": ["ecephys"]},
+            },
+        )
+        assert set(result["name"]) == {"asset-A", "asset-C"}
+
+    def test_all_fields_combined(self, df):
+        result = _apply_filter_to_dataframe(
+            df,
+            {
+                "name": {"$regex": "asset"},
+                "data_description.project_name": {"$in": ["ProjectX", "ProjectY"]},
+                "data_description.modality": "ecephys",
+                "data_description.data_level": "raw",
+                "subject.subject_id": {"$gte": "100"},
+                "subject.subject_details.genotype": "wt/wt",
+                "acquisition.acquisition_start_time": {"$gte": "2024-01-01"},
+                "acquisition.acquisition_end_time": {"$lte": "2024-12-31"},
+                "process_date": {"$gte": "2024-01-01"},
+            },
+        )
+        assert set(result["name"]) == {"asset-A", "asset-C"}
+
+    # ── Edge cases: None/NaN in columns ───────────────────────────────────
+
+    def test_none_in_modalities_column(self):
+        df = pd.DataFrame(
+            {
+                "name": ["asset-A", "asset-B"],
+                "project_name": ["ProjectX", "ProjectX"],
+                "modalities": [None, np.array(["ecephys"])],
+                "data_level": ["raw", "raw"],
+                "subject_id": ["100", "200"],
+                "genotype": ["wt/wt", "wt/wt"],
+                "acquisition_start_time": ["2024-01-01 00:00:00+00:00", "2024-02-01 00:00:00+00:00"],
+                "acquisition_end_time": ["2024-01-02 00:00:00+00:00", "2024-02-02 00:00:00+00:00"],
+                "process_date": ["2024-01-10 00:00:00+00:00", "2024-02-10 00:00:00+00:00"],
+            }
+        )
+        result = _apply_filter_to_dataframe(df, {"data_description.modality": "ecephys"})
+        assert set(result["name"]) == {"asset-B"}
+
+    def test_none_in_modalities_with_in_operator(self):
+        df = pd.DataFrame(
+            {
+                "name": ["asset-A", "asset-B"],
+                "project_name": ["ProjectX", "ProjectX"],
+                "modalities": [None, np.array(["ecephys"])],
+                "data_level": ["raw", "raw"],
+                "subject_id": ["100", "200"],
+                "genotype": ["wt/wt", "wt/wt"],
+                "acquisition_start_time": ["2024-01-01 00:00:00+00:00", "2024-02-01 00:00:00+00:00"],
+                "acquisition_end_time": ["2024-01-02 00:00:00+00:00", "2024-02-02 00:00:00+00:00"],
+                "process_date": ["2024-01-10 00:00:00+00:00", "2024-02-10 00:00:00+00:00"],
+            }
+        )
+        result = _apply_filter_to_dataframe(df, {"data_description.modality": {"$in": ["ecephys"]}})
+        assert set(result["name"]) == {"asset-B"}
+
+    def test_none_in_modalities_with_all_operator(self):
+        df = pd.DataFrame(
+            {
+                "name": ["asset-A", "asset-B"],
+                "project_name": ["ProjectX", "ProjectX"],
+                "modalities": [None, np.array(["ecephys", "fMRI"])],
+                "data_level": ["raw", "raw"],
+                "subject_id": ["100", "200"],
+                "genotype": ["wt/wt", "wt/wt"],
+                "acquisition_start_time": ["2024-01-01 00:00:00+00:00", "2024-02-01 00:00:00+00:00"],
+                "acquisition_end_time": ["2024-01-02 00:00:00+00:00", "2024-02-02 00:00:00+00:00"],
+                "process_date": ["2024-01-10 00:00:00+00:00", "2024-02-10 00:00:00+00:00"],
+            }
+        )
+        result = _apply_filter_to_dataframe(
+            df, {"data_description.modality": {"$all": ["ecephys", "fMRI"]}}
+        )
+        assert set(result["name"]) == {"asset-B"}
+
+    def test_none_in_modalities_with_regex_operator(self):
+        df = pd.DataFrame(
+            {
+                "name": ["asset-A", "asset-B"],
+                "project_name": ["ProjectX", "ProjectX"],
+                "modalities": [None, np.array(["ecephys"])],
+                "data_level": ["raw", "raw"],
+                "subject_id": ["100", "200"],
+                "genotype": ["wt/wt", "wt/wt"],
+                "acquisition_start_time": ["2024-01-01 00:00:00+00:00", "2024-02-01 00:00:00+00:00"],
+                "acquisition_end_time": ["2024-01-02 00:00:00+00:00", "2024-02-02 00:00:00+00:00"],
+                "process_date": ["2024-01-10 00:00:00+00:00", "2024-02-10 00:00:00+00:00"],
+            }
+        )
+        result = _apply_filter_to_dataframe(
+            df, {"data_description.modality": {"$regex": "ecephys"}}
+        )
+        assert set(result["name"]) == {"asset-B"}
+
+    def test_none_in_modalities_with_elemMatch(self):
+        df = pd.DataFrame(
+            {
+                "name": ["asset-A", "asset-B"],
+                "project_name": ["ProjectX", "ProjectX"],
+                "modalities": [None, np.array(["ecephys"])],
+                "data_level": ["raw", "raw"],
+                "subject_id": ["100", "200"],
+                "genotype": ["wt/wt", "wt/wt"],
+                "acquisition_start_time": ["2024-01-01 00:00:00+00:00", "2024-02-01 00:00:00+00:00"],
+                "acquisition_end_time": ["2024-01-02 00:00:00+00:00", "2024-02-02 00:00:00+00:00"],
+                "process_date": ["2024-01-10 00:00:00+00:00", "2024-02-10 00:00:00+00:00"],
+            }
+        )
+        result = _apply_filter_to_dataframe(
+            df, {"data_description.modalities": {"$elemMatch": {"abbreviation": "ecephys"}}}
+        )
+        assert set(result["name"]) == {"asset-B"}
+
+    def test_nan_in_scalar_column_with_equality(self):
+        df = pd.DataFrame(
+            {
+                "name": ["asset-A", "asset-B"],
+                "project_name": [None, "ProjectX"],
+                "modalities": [np.array(["ecephys"]), np.array(["ecephys"])],
+                "data_level": ["raw", "raw"],
+                "subject_id": ["100", "200"],
+                "genotype": ["wt/wt", "wt/wt"],
+                "acquisition_start_time": ["2024-01-01 00:00:00+00:00", "2024-02-01 00:00:00+00:00"],
+                "acquisition_end_time": ["2024-01-02 00:00:00+00:00", "2024-02-02 00:00:00+00:00"],
+                "process_date": ["2024-01-10 00:00:00+00:00", "2024-02-10 00:00:00+00:00"],
+            }
+        )
+        result = _apply_filter_to_dataframe(df, {"data_description.project_name": "ProjectX"})
+        assert set(result["name"]) == {"asset-B"}
+
+    def test_nan_in_datetime_column(self):
+        df = pd.DataFrame(
+            {
+                "name": ["asset-A", "asset-B"],
+                "project_name": ["ProjectX", "ProjectX"],
+                "modalities": [np.array(["ecephys"]), np.array(["ecephys"])],
+                "data_level": ["raw", "raw"],
+                "subject_id": ["100", "200"],
+                "genotype": ["wt/wt", "wt/wt"],
+                "acquisition_start_time": [None, "2024-02-01 00:00:00+00:00"],
+                "acquisition_end_time": ["2024-01-02 00:00:00+00:00", "2024-02-02 00:00:00+00:00"],
+                "process_date": ["2024-01-10 00:00:00+00:00", "2024-02-10 00:00:00+00:00"],
+            }
+        )
+        result = _apply_filter_to_dataframe(
+            df, {"acquisition.acquisition_start_time": {"$gte": "2024-01-01"}}
+        )
+        # NaN/NaT should not match any comparison
+        assert set(result["name"]) == {"asset-B"}
+
+    # ── Empty DataFrame ───────────────────────────────────────────────────
+
+    def test_empty_dataframe_returns_empty(self):
+        df = pd.DataFrame(
+            {
+                "name": pd.Series([], dtype=str),
+                "project_name": pd.Series([], dtype=str),
+                "modalities": pd.Series([], dtype=object),
+                "data_level": pd.Series([], dtype=str),
+                "subject_id": pd.Series([], dtype=str),
+                "genotype": pd.Series([], dtype=str),
+                "acquisition_start_time": pd.Series([], dtype=str),
+                "acquisition_end_time": pd.Series([], dtype=str),
+                "process_date": pd.Series([], dtype=str),
+            }
+        )
+        result = _apply_filter_to_dataframe(df, {"name": "anything"})
+        assert len(result) == 0
+
+    def test_empty_dataframe_with_complex_query(self):
+        df = pd.DataFrame(
+            {
+                "name": pd.Series([], dtype=str),
+                "project_name": pd.Series([], dtype=str),
+                "modalities": pd.Series([], dtype=object),
+                "data_level": pd.Series([], dtype=str),
+                "subject_id": pd.Series([], dtype=str),
+                "genotype": pd.Series([], dtype=str),
+                "acquisition_start_time": pd.Series([], dtype=str),
+                "acquisition_end_time": pd.Series([], dtype=str),
+                "process_date": pd.Series([], dtype=str),
+            }
+        )
+        result = _apply_filter_to_dataframe(
+            df,
+            {
+                "data_description.project_name": {"$in": ["X"]},
+                "data_description.modality": {"$all": ["ecephys"]},
+                "acquisition.acquisition_start_time": {"$gte": "2024-01-01"},
+            },
+        )
+        assert len(result) == 0
+
+    # ── Single row DataFrame ──────────────────────────────────────────────
+
+    def test_single_row_match(self):
+        df = pd.DataFrame(
+            {
+                "name": ["only-asset"],
+                "project_name": ["Solo"],
+                "modalities": [np.array(["ecephys"])],
+                "data_level": ["raw"],
+                "subject_id": ["999"],
+                "genotype": ["wt/wt"],
+                "acquisition_start_time": ["2024-06-01 00:00:00+00:00"],
+                "acquisition_end_time": ["2024-06-02 00:00:00+00:00"],
+                "process_date": ["2024-06-05 00:00:00+00:00"],
+            }
+        )
+        result = _apply_filter_to_dataframe(df, {"data_description.project_name": "Solo"})
+        assert list(result["name"]) == ["only-asset"]
+
+    def test_single_row_no_match(self):
+        df = pd.DataFrame(
+            {
+                "name": ["only-asset"],
+                "project_name": ["Solo"],
+                "modalities": [np.array(["ecephys"])],
+                "data_level": ["raw"],
+                "subject_id": ["999"],
+                "genotype": ["wt/wt"],
+                "acquisition_start_time": ["2024-06-01 00:00:00+00:00"],
+                "acquisition_end_time": ["2024-06-02 00:00:00+00:00"],
+                "process_date": ["2024-06-05 00:00:00+00:00"],
+            }
+        )
+        result = _apply_filter_to_dataframe(df, {"data_description.project_name": "Other"})
+        assert len(result) == 0

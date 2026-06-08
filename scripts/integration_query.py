@@ -94,8 +94,8 @@ def _test_non_cache_field_routes_to_docdb() -> None:
     print(f"    docdb results: {len(result.asset_names)}, elapsed: {result.elapsed_seconds:.2f}s")
 
 
-def _test_unsupported_operator_routes_to_docdb() -> None:
-    """$elemMatch is unsupported for cache → routes to docdb."""
+def _test_elemMatch_routes_to_cache() -> None:
+    """$elemMatch on a modality array field is now cache-eligible → cache path."""
     result = retrieve_records(
         {
             "data_description.modalities": {
@@ -105,9 +105,8 @@ def _test_unsupported_operator_routes_to_docdb() -> None:
         names_only=True,
         limit=10,
     )
-    assert result.backend == "docdb", f"expected 'docdb', got '{result.backend}'"
-    assert len(result.asset_names) <= 10
-    print(f"    docdb results: {len(result.asset_names)}, elapsed: {result.elapsed_seconds:.2f}s")
+    assert result.backend == "cache", f"expected 'cache', got '{result.backend}'"
+    print(f"    cache results: {len(result.asset_names)}, elapsed: {result.elapsed_seconds:.2f}s")
 
 
 def _test_cache_path_filtered_names() -> None:
@@ -209,32 +208,85 @@ def _test_aggregation_invalid_pipeline() -> None:
     print("    ValueError raised as expected")
 
 
-def _test_openscope_2025_cache_vs_docdb() -> None:
-    """Combined date-range + project_name regex: cache and docdb must return identical asset names."""
-    query = {
-        "acquisition.acquisition_start_time": {
-            "$regex": "^2025-",
-        },
-        "data_description.project_name": "OpenScope",
-    }
+def _assert_cache_docdb_equal(query: dict, *, label: str = "") -> None:
+    """Run *query* through both backends and assert they return the same asset names."""
     cache_result = retrieve_records(query, names_only=True, force_backend="cache")
     docdb_result = retrieve_records(query, names_only=True, force_backend="docdb")
-    assert cache_result.backend == "cache", f"expected 'cache', got '{cache_result.backend}'"
-    assert docdb_result.backend == "docdb", f"expected 'docdb', got '{docdb_result.backend}'"
+    assert cache_result.backend == "cache"
+    assert docdb_result.backend == "docdb"
     cache_names = sorted(cache_result.asset_names)
     docdb_names = sorted(docdb_result.asset_names)
     assert cache_names == docdb_names, (
-        f"cache ({len(cache_names)}) and docdb ({len(docdb_names)}) results differ.\n"
+        f"{label + ': ' if label else ''}cache ({len(cache_names)}) and docdb "
+        f"({len(docdb_names)}) results differ.\n"
         f"  only in cache: {sorted(set(cache_names) - set(docdb_names))}\n"
         f"  only in docdb: {sorted(set(docdb_names) - set(cache_names))}"
     )
     print(
-        f"    matching assets: {len(cache_names)}, "
-        f"cache elapsed: {cache_result.elapsed_seconds:.2f}s, "
-        f"docdb elapsed: {docdb_result.elapsed_seconds:.2f}s"
+        f"    {label + ': ' if label else ''}{len(cache_names)} assets, "
+        f"cache {cache_result.elapsed_seconds:.2f}s / docdb {docdb_result.elapsed_seconds:.2f}s"
     )
 
 
+def _test_openscope_2025_cache_vs_docdb() -> None:
+    """Combined date-range + project_name regex: cache and docdb must return identical asset names."""
+    _assert_cache_docdb_equal(
+        {
+            "acquisition.acquisition_start_time": {"$regex": "^2025-"},
+            "data_description.project_name": "OpenScope",
+        },
+        label="OpenScope 2025",
+    )
+
+
+def _test_subject_id_exact_cache_vs_docdb() -> None:
+    """Single subject ID (638577, ~20 Dynamic Routing behavior records from 2022):
+    cache and docdb must agree on the full asset list."""
+    _assert_cache_docdb_equal(
+        {"subject.subject_id": "638577"},
+        label="subject 638577",
+    )
+
+
+def _test_name_prefix_regex_cache_vs_docdb() -> None:
+    """Name prefix regex for a single subject: cache and docdb must return identical names.
+    Anchored to ^behavior_638577_ so the result set is small and stable."""
+    _assert_cache_docdb_equal(
+        {"name": {"$regex": "^behavior_638577_"}},
+        label="name prefix behavior_638577_",
+    )
+
+
+def _test_subject_and_datalevel_cache_vs_docdb() -> None:
+    """Subject ID + data_level=derived (SmartSPIM subject 748465, ~5 derived assets):
+    cache and docdb must agree."""
+    _assert_cache_docdb_equal(
+        {
+            "subject.subject_id": "748465",
+            "data_description.data_level": "derived",
+        },
+        label="subject 748465 derived",
+    )
+
+
+def _test_project_and_datalevel_cache_vs_docdb() -> None:
+    """project_name=Dynamic Routing + data_level=raw: exercises a multi-field AND
+    on two independently-cacheable columns."""
+    _assert_cache_docdb_equal(
+        {
+            "data_description.project_name": "Dynamic Routing",
+            "data_description.data_level": "raw",
+        },
+        label="Dynamic Routing raw",
+    )
+
+
+def _test_subject_in_list_cache_vs_docdb() -> None:
+    """$in on subject_id across three subjects: cache and docdb must agree."""
+    _assert_cache_docdb_equal(
+        {"subject.subject_id": {"$in": ["638577", "748465", "739195"]}},
+        label="subject $in [638577, 748465, 739195]",
+    )
 
 
 TESTS = [
@@ -244,7 +296,7 @@ TESTS = [
     ("acquisition_start_time range → cache",  _test_date_range_filter_cache),
     ("$in on project_name → cache",           _test_in_operator_cache),
     ("unknown field → docdb",                 _test_non_cache_field_routes_to_docdb),
-    ("$elemMatch → docdb",                    _test_unsupported_operator_routes_to_docdb),
+    ("$elemMatch on modalities → cache",     _test_elemMatch_routes_to_cache),
     ("cache filtered names_only",             _test_cache_path_filtered_names),
     ("docdb fetch with projection",           _test_docdb_fetch_single_record),
     ("force_backend=docdb on eligible query", _test_force_docdb_on_eligible_query),
@@ -252,7 +304,13 @@ TESTS = [
     ("force_backend=cache raises ineligible", _test_force_cache_raises_for_ineligible),
     ("aggregation pipeline → docdb",          _test_aggregation_pipeline),
     ("aggregation invalid pipeline raises",   _test_aggregation_invalid_pipeline),
-    ("OpenScope 2025: cache == docdb",        _test_openscope_2025_cache_vs_docdb),
+    # ── cache / docdb sync tests ───────────────────────────────────────────────
+    ("OpenScope 2025: cache == docdb",               _test_openscope_2025_cache_vs_docdb),
+    ("subject 638577: cache == docdb",               _test_subject_id_exact_cache_vs_docdb),
+    ("name prefix behavior_638577_: cache == docdb", _test_name_prefix_regex_cache_vs_docdb),
+    ("subject 748465 derived: cache == docdb",       _test_subject_and_datalevel_cache_vs_docdb),
+    ("Dynamic Routing raw: cache == docdb",          _test_project_and_datalevel_cache_vs_docdb),
+    ("subject $in 3 ids: cache == docdb",            _test_subject_in_list_cache_vs_docdb),
 ]
 
 

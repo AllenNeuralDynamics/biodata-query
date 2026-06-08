@@ -12,9 +12,14 @@ logger = logging.getLogger(__name__)
 
 import pandas as pd
 from aind_data_access_api.document_db import MetadataDbClient
-from zombie_squirrel import asset_basics
+from zombie_squirrel import asset_basics as _asset_basics_fetch
 
 API_GATEWAY_HOST = "api.allenneuraldynamics.org"
+
+
+def _asset_basics_cached() -> pd.DataFrame:
+    """Fetch a fresh copy of the asset-basics DataFrame on every call."""
+    return _asset_basics_fetch()
 DOCDB_API_VERSION = os.environ.get("DOCDB_API_VERSION", "v2")
 
 # Mapping from MongoDB document field paths to asset_basics column names
@@ -34,7 +39,7 @@ FIELD_TO_COLUMN: dict[str, str] = {
 
 # MongoDB operators that cannot be handled by the pandas cache path
 _UNSUPPORTED_OPS: frozenset[str] = frozenset(
-    {"$or", "$not", "$elemMatch", "$exists", "$nor", "$expr", "$where", "$text"}
+    {"$or", "$not", "$exists", "$nor", "$expr", "$where", "$text"}
 )
 
 # MongoDB operators that ARE supported in the pandas cache path
@@ -47,7 +52,10 @@ _DATETIME_COLUMNS: frozenset[str] = frozenset(
     {"acquisition_start_time", "acquisition_end_time", "process_date"}
 )
 
-# Column that stores modalities as a comma-separated string of abbreviations
+# Columns that store numpy arrays of strings (from parquet list columns)
+_ARRAY_COLUMNS: frozenset[str] = frozenset({"modalities"})
+
+# Column that stores modalities as a numpy array of abbreviation strings
 _MODALITIES_COLUMN = "modalities"
 
 
@@ -62,14 +70,18 @@ class QueryResult:
     dataframe: pd.DataFrame | None = None  # set on cache path when projection is cache-servable
 
 
-def _has_unsupported_operators(value: object) -> bool:
+def _has_unsupported_operators(value: object, is_array_col: bool = False) -> bool:
     """Return True if the value dict uses any unsupported MongoDB operators."""
     if not isinstance(value, dict):
         return False
     for key in value:
-        if key in _UNSUPPORTED_OPS:
+        if key == "$elemMatch":
+            if not is_array_col:
+                return True
+            # $elemMatch on a known array column is supported
+        elif key in _UNSUPPORTED_OPS:
             return True
-        if key.startswith("$") and key not in _SUPPORTED_OPS:
+        elif key.startswith("$") and key not in _SUPPORTED_OPS:
             return True
     return False
 
@@ -80,7 +92,8 @@ def is_cache_eligible(query: dict) -> bool:
         if field not in FIELD_TO_COLUMN:
             logger.debug("Cache ineligible: field %r not in FIELD_TO_COLUMN", field)
             return False
-        if _has_unsupported_operators(value):
+        col = FIELD_TO_COLUMN[field]
+        if _has_unsupported_operators(value, is_array_col=(col in _ARRAY_COLUMNS)):
             logger.debug("Cache ineligible: field %r uses unsupported operators", field)
             return False
     return True
@@ -111,36 +124,62 @@ def _projection_is_cache_servable(projection: dict | None) -> bool:
 
 
 def _modality_series_contains(series: pd.Series, value: str) -> pd.Series:
-    """Boolean mask: rows where *value* is an exact modality term."""
+    """Boolean mask: rows where *value* is an exact modality abbreviation."""
 
     def _check(cell: object) -> bool:
-        if pd.isna(cell):
+        if cell is None or (not hasattr(cell, '__iter__')):
             return False
-        return value in [m.strip() for m in str(cell).split(",")]
+        try:
+            return value in cell
+        except TypeError:
+            return False
 
     return series.apply(_check)
 
 
 def _modality_series_contains_any(series: pd.Series, values: list) -> pd.Series:
-    """Boolean mask: rows where any element of *values* is an exact modality term."""
+    """Boolean mask: rows where any element of *values* is an exact modality abbreviation."""
     value_set = set(values)
 
     def _check(cell: object) -> bool:
-        if pd.isna(cell):
+        if cell is None or (not hasattr(cell, '__iter__')):
             return False
-        return bool({m.strip() for m in str(cell).split(",")} & value_set)
+        try:
+            return bool(set(cell) & value_set)
+        except TypeError:
+            return False
 
     return series.apply(_check)
 
 
 def _modality_series_contains_all(series: pd.Series, values: list) -> pd.Series:
-    """Boolean mask: rows where all elements of *values* are exact modality terms."""
+    """Boolean mask: rows where all elements of *values* are exact modality abbreviations."""
     value_set = set(values)
 
     def _check(cell: object) -> bool:
-        if pd.isna(cell):
+        if cell is None or (not hasattr(cell, '__iter__')):
             return False
-        return value_set <= {m.strip() for m in str(cell).split(",")}
+        try:
+            return value_set <= set(cell)
+        except TypeError:
+            return False
+
+    return series.apply(_check)
+
+
+def _modality_series_regex(series: pd.Series, pattern: str, case_insensitive: bool) -> pd.Series:
+    """Boolean mask: rows where any modality abbreviation matches *pattern*."""
+    import re
+    flags = re.IGNORECASE if case_insensitive else 0
+    compiled = re.compile(pattern, flags)
+
+    def _check(cell: object) -> bool:
+        if cell is None or (not hasattr(cell, '__iter__')):
+            return False
+        try:
+            return any(compiled.search(str(m)) for m in cell)
+        except TypeError:
+            return False
 
     return series.apply(_check)
 
@@ -169,18 +208,19 @@ def _apply_filter_to_dataframe(df: pd.DataFrame, query: dict) -> pd.DataFrame:
 
         if col == _MODALITIES_COLUMN:
             if isinstance(value, dict):
-                if "$all" in value:
+                if "$elemMatch" in value:
+                    elem = value["$elemMatch"]
+                    # Cache stores abbreviations directly; match on abbreviation field
+                    abbrev = elem.get("abbreviation")
+                    if abbrev is not None:
+                        mask &= _modality_series_contains(series, abbrev)
+                elif "$all" in value:
                     mask &= _modality_series_contains_all(series, value["$all"])
                 elif "$in" in value:
                     mask &= _modality_series_contains_any(series, value["$in"])
                 elif "$regex" in value:
                     case_insensitive = "i" in value.get("$options", "")
-                    mask &= series.str.contains(
-                        value["$regex"],
-                        case=not case_insensitive,
-                        na=False,
-                        regex=True,
-                    )
+                    mask &= _modality_series_regex(series, value["$regex"], case_insensitive)
             else:
                 mask &= _modality_series_contains(series, value)
 
@@ -298,7 +338,7 @@ def retrieve_records(
 
     if use_cache:
         logger.debug("Routing to cache backend")
-        df = asset_basics()
+        df = _asset_basics_cached()
         filtered = _apply_filter_to_dataframe(df, filter_query)
         if limit:
             filtered = filtered.iloc[:limit]
