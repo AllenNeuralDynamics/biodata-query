@@ -35,13 +35,13 @@ def sample_df():
     """Small DataFrame mimicking real asset_basics() output.
 
     - datetime columns store ISO-8601 strings with timezone offsets
-    - modalities is a numpy array of abbreviation strings, as returned by zombie_squirrel
+    - modalities is a numpy array of abbreviation strings, as returned by biodata_cache
     """
     return pd.DataFrame(
         {
             "name": ["asset-A", "asset-B", "asset-C", "asset-D"],
             "project_name": ["ProjectX", "ProjectX", "ProjectY", "ProjectY"],
-            # numpy arrays of modality abbreviations, as returned by zombie_squirrel
+            # numpy arrays of modality abbreviations, as returned by biodata_cache
             "modalities": [
                 np.array(["ecephys"]),
                 np.array(["behavior", "behavior-videos"]),
@@ -51,7 +51,7 @@ def sample_df():
             "data_level": ["raw", "derived", "raw", "raw"],
             "subject_id": ["100", "200", "300", "400"],
             "genotype": ["wt/wt", "wt/Cre", "wt/wt", "Cre/Cre"],
-            # timezone-aware ISO-8601 strings, as returned by zombie_squirrel
+            # timezone-aware ISO-8601 strings, as returned by biodata_cache
             "acquisition_start_time": [
                 "2024-01-01 00:00:00+00:00",
                 "2024-02-01 00:00:00+00:00",

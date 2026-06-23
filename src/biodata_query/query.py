@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 import pandas as pd
 from aind_data_access_api.document_db import MetadataDbClient
-from zombie_squirrel import asset_basics as _asset_basics_fetch
+from biodata_cache import asset_basics as _asset_basics_fetch
 
 API_GATEWAY_HOST = "api.allenneuraldynamics.org"
 

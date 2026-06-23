@@ -16,7 +16,7 @@ from __future__ import annotations
 import time
 
 from aind_data_access_api.document_db import MetadataDbClient
-from zombie_squirrel import asset_basics
+from biodata_cache import asset_basics
 
 from biodata_query.query import _apply_filter_to_dataframe, _fetch_full_records_batched
 
